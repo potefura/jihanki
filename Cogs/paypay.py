@@ -7,6 +7,7 @@ import os
 import uuid
 from utils import is_allowed
 import paypayu
+from Cogs.server_data import disable_payment_for_all_guilds, ensure_guild_files, set_payment
 
 PAYPAY_DATA_FILE = "paypay_data.json"
 VENDING_DATA_FILE = "vending_data.json"
@@ -72,6 +73,9 @@ class PayPayModal(ui.Modal, title="PayPay OTP認証"):
                 "uuid": self.uuid
             }
             save_paypay_data(paypay_data)
+            if interaction.guild_id is not None:
+                ensure_guild_files(interaction.guild_id)
+                set_payment(interaction.guild_id, user_id_str, "paypay", True)
             
             # vending_data.json の paypay_id を自動設定
             vending_data = load_vending_data()
@@ -91,7 +95,7 @@ class PayPayModal(ui.Modal, title="PayPay OTP認証"):
             embed = discord.Embed(
                 title="PayPay登録完了",
                 description="PayPayアカウント情報の登録が完了しました。",
-                color=discord.Color.green()
+                color=discord.Color.blue()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -198,6 +202,7 @@ class PaypayCog(commands.Cog):
         # データ削除
         del paypay_data[user_id_str]
         save_paypay_data(paypay_data)
+        disable_payment_for_all_guilds(user_id_str, "paypay")
 
         # vending_data.json の paypay_id 解除
         vending_data = load_vending_data()
@@ -211,7 +216,7 @@ class PaypayCog(commands.Cog):
         embed = discord.Embed(
             title="PayPayログアウト完了",
             description="PayPayアカウント情報を削除しました。",
-            color=discord.Color.green()
+            color=discord.Color.blue()
         )
 
         await interaction.response.send_message(
@@ -256,7 +261,7 @@ class PaypayCog(commands.Cog):
             embed = discord.Embed(
                 title="プロキシ設定完了",
                 description=f"プロキシURLを更新しました。\n```\n{proxy_url}\n```",
-                color=discord.Color.green()
+                color=discord.Color.blue()
             )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
