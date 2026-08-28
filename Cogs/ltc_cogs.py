@@ -10,6 +10,7 @@ from pathlib import Path
 
 import discord
 import requests
+from bitcoinlib.wallets import Wallet, wallet_delete_if_exists
 
 from bitcoinlib.wallets import Wallet, wallet_delete_if_exists
 
@@ -46,6 +47,8 @@ def create_order_wallet(guild_id: int, order_id: str) -> dict:
     cache = guild_dir(guild_id) / "cache"
     database_file = cache / f"ltc-{order_id}.sqlite"
     database = f"sqlite:///{database_file.resolve()}"
+    wallet_name = f"jihanki-{guild_id}-{order_id}"
+    wallet = Wallet.create(name=wallet_name, network="litecoin", db_uri=database)
 
     wallet_name = f"jihanki-{guild_id}-{order_id}"
     wallet = Wallet.create(
@@ -94,6 +97,7 @@ def destroy_order_wallet(order: dict) -> None:
 
 
 def sweep_order(order: dict, recipient: str, amount: int) -> str:
+    """Sweep the temporary wallet to the seller, then destroy it."""
 
     """Sweep the temporary wallet to the seller, then destroy it."""
 
