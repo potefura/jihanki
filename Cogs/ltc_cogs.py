@@ -175,20 +175,12 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
 class LTCCog(commands.Cog):
     def __init__(self, bot): self.bot = bot
 
-    @app_commands.command(name="ltc登録", description="売上受取用Litecoinウォレットを登録します")
-    @is_allowed()
-    async def register(self, interaction: discord.Interaction, address: str):
-        if not interaction.guild_id or not LTC_ADDRESS.fullmatch(address.strip()):
-            return await interaction.response.send_message("サーバー内で正しいLTCアドレスを指定してください。", ephemeral=True)
-        set_payment(interaction.guild_id, interaction.user.id, "ltc", True, ltc_wallet=address.strip())
-        await interaction.response.send_message(embed=discord.Embed(title="LTC登録完了", color=discord.Color.blue()), ephemeral=True)
-
     @app_commands.command(name="ltc有効化", description="登録済みLTC決済を有効化します")
     @is_allowed()
     async def enable(self, interaction: discord.Interaction):
         settings = payment_settings(interaction.guild_id, interaction.user.id)
         if not settings.get("ltc_wallet"):
-            return await interaction.response.send_message("先に `/ltc登録` を実行してください。", ephemeral=True)
+            return await interaction.response.send_message("先に `/ltcウォレット設定` で売上の受取先を設定してください。", ephemeral=True)
         set_payment(interaction.guild_id, interaction.user.id, "ltc", True)
         await interaction.response.send_message("LTC決済を有効化しました。", ephemeral=True)
 
