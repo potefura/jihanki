@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 from typing import NamedTuple, Optional
 import datetime
 from Cogs.server_data import ensure_guild_files, payment_settings, save_product, set_payment
+from Cogs.ltc_cogs import start_ltc_order
 
 
 VENDING_DATA_FILE = "vending_data.json"
@@ -487,6 +488,7 @@ class VendingMachineCog(commands.Cog):
         description="商品説明（任意）",
         price_paypay="PayPay価格",
         price_kyash="Kyash価格",
+        price_ltc="Litecoin価格（LTC）",
         emoji="商品絵文字"
     )
     async def vm_add_product(
@@ -496,6 +498,7 @@ class VendingMachineCog(commands.Cog):
         name: str, 
         price_paypay: int,
         price_kyash: int,
+        price_ltc: Optional[float] = None,
         description: Optional[str] = None, 
         emoji: Optional[str] = None
     ):
@@ -515,6 +518,7 @@ class VendingMachineCog(commands.Cog):
             "description": description or "",
             "price_paypay": price_paypay,
             "price_kyash": price_kyash,
+            "price_ltc": price_ltc,
             "emoji": emoji,
             "stock_file": stock_file_path,
             "infinite_stock": False,
@@ -590,7 +594,9 @@ class VendingMachineCog(commands.Cog):
             for p in products:
                 paypay_price = p.get('price_paypay', '未設定')
                 kyash_price = p.get('price_kyash', '未設定')
-                price_text = f"```PayPay: {paypay_price}円 | Kyash: {kyash_price}円```"
+                ltc_price = p.get('price_ltc')
+                ltc_text = f" | LTC: {ltc_price} LTC" if ltc_price is not None else ""
+                price_text = f"```PayPay: {paypay_price}円 | Kyash: {kyash_price}円{ltc_text}```"
                 product_description = p.get('description', '').strip()
                 if product_description:
                     value = f"{product_description}\n{price_text}"
@@ -799,7 +805,9 @@ class VendingMachineCog(commands.Cog):
                 for p in products:
                     paypay_price = p.get('price_paypay', '未設定')
                     kyash_price = p.get('price_kyash', '未設定')
-                    price_text = f"```PayPay: {paypay_price}円 | Kyash: {kyash_price}円```"
+                    ltc_price = p.get('price_ltc')
+                    ltc_text = f" | LTC: {ltc_price} LTC" if ltc_price is not None else ""
+                    price_text = f"```PayPay: {paypay_price}円 | Kyash: {kyash_price}円{ltc_text}```"
                     product_description = p.get('description', '').strip()
                     if product_description:
                         value = f"{product_description}\n{price_text}"
@@ -912,11 +920,13 @@ class VendingMachineCog(commands.Cog):
                     return await interaction.response.send_message("支払方法を選択してください。", view=view, ephemeral=True)
                 if selected not in available:
                     return await interaction.response.send_message("この支払方法はログアウトまたは期限切れのため利用できません。", ephemeral=True)
+
                 if selected == "ltc":
                     return await interaction.response.send_message(
                         "LTC決済は購入者のDMで行います。販売者ウォレットへの自動送金機能は、安全な鍵管理が設定されるまで利用できません。",
                         ephemeral=True,
                     )
+
                 embed = discord.Embed(
                     title="購入する商品を選択してください。",
                     color=discord.Color.blue()
@@ -1022,7 +1032,8 @@ class VendingMachineCog(commands.Cog):
                     inline=False
                 )
             else:
-                embed.add_field(name="金額", value=f"```{final_price}円```", inline=False)
+                unit = " LTC" if self.payment_method == "ltc" else "円"
+                embed.add_field(name="金額", value=f"```{final_price}{unit}```", inline=False)
             
             embed.set_footer(text="Developer @potefura")
             
@@ -1052,6 +1063,17 @@ class VendingMachineCog(commands.Cog):
             if self.final_price == 0:
                 await self.process_purchase(interaction, None)
             else:
+                if self.payment_method == "ltc":
+                    vm = load_json(VENDING_DATA_FILE).get(self.vending_machine_id, {})
+                    await start_ltc_order(
+                        interaction,
+                        vm.get("owner_id", ""),
+                        self.final_price,
+                        lambda paid_interaction: self.process_purchase(
+                            paid_interaction, None, skip_payment=True, already_deferred=True
+                        ),
+                    )
+                    return
                 if self.payment_method == "paypay":
                     modal = VendingMachineCog.PayPayModal(
                         self.vending_machine_id,
@@ -1070,8 +1092,9 @@ class VendingMachineCog(commands.Cog):
                     )
                 await interaction.response.send_modal(modal)
 
-        async def process_purchase(self, interaction: discord.Interaction, link: Optional[str]):
-            await interaction.response.defer(ephemeral=True)
+        async def process_purchase(self, interaction: discord.Interaction, link: Optional[str], skip_payment=False, already_deferred=False):
+            if not already_deferred:
+                await interaction.response.defer(ephemeral=True)
             
             try:
                 vending_data = load_json(VENDING_DATA_FILE)
@@ -1086,7 +1109,7 @@ class VendingMachineCog(commands.Cog):
                     embed.set_footer(text="Developer @potefura")
                     return await interaction.followup.send(embed=embed, ephemeral=True)
                 
-                if self.final_price > 0:
+                if self.final_price > 0 and not skip_payment:
                     if self.payment_method == "paypay":
                         paypay_data = load_paypay_data()
                         owner_credentials = paypay_data.get(vm.get("paypay_id", ""))
@@ -1427,10 +1450,13 @@ class VendingMachineCog(commands.Cog):
                     
                     price_key = f"price_{payment_method}"
                     price = product.get(price_key, product.get('price', 0))
+                    if price is None:
+                        continue
+                    unit = " LTC" if payment_method == "ltc" else "円"
                     
                     sales_count = product.get("sales_count", 0)
                     if product.get("infinite_stock"):
-                        description = f"価格: {price}円│在庫数: ∞個│販売数: {sales_count}個"
+                        description = f"価格: {price}{unit}│在庫数: ∞個│販売数: {sales_count}個"
                     else:
                         try:
                             with open(product.get("stock_file", ""), "r", encoding="utf-8") as f:
@@ -1439,7 +1465,7 @@ class VendingMachineCog(commands.Cog):
                         except:
                             stock_count = 0
                         
-                        description = f"価格: {price}円│在庫数: {stock_count}個│販売数: {sales_count}個"
+                        description = f"価格: {price}{unit}│在庫数: {stock_count}個│販売数: {sales_count}個"
                     
                     options.append(discord.SelectOption(
                         label=label,
