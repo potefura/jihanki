@@ -32,9 +32,12 @@ class MyBot(commands.Bot):
         # ===========================
         # Cogロード
         # ===========================
+        # Helper modules live beside extensions, but discord.py can only load
+        # modules which expose an async ``setup`` entry point.
+        helper_modules = {"server_data.py"}
         for file in os.listdir(cogs_dir):
 
-            if file.endswith(".py") and not file.startswith("_"):
+            if file.endswith(".py") and not file.startswith("_") and file not in helper_modules:
 
                 ext = f"Cogs.{file[:-3]}"
 

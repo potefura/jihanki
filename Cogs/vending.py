@@ -27,6 +27,18 @@ STOCK_NOTIFICATION_DATA_FILE = "stock_notification_data.json"
 COUPON_DATA_FILE = "coupon_data.json"
 ROLE_ASSIGNMENT_DATA_FILE = "role_assignment_data.json"
 USED_LINKS_FILE = "used_paypay_links.json"
+LITOSHI = 100_000_000
+
+
+def get_product_price(product: dict, payment_method: str):
+    """Return a configured price without treating a missing LTC price as free."""
+    if payment_method == "ltc":
+        return product.get("price_ltc")
+    return product.get(f"price_{payment_method}", product.get("price", 0))
+
+
+def format_ltc(amount: float) -> str:
+    return f"{amount:.8f}".rstrip("0").rstrip(".")
 
 def is_link_used(link: str) -> bool:
     if not os.path.exists(USED_LINKS_FILE): return False
@@ -502,6 +514,11 @@ class VendingMachineCog(commands.Cog):
         description: Optional[str] = None, 
         emoji: Optional[str] = None
     ):
+        if price_ltc is not None and round(price_ltc * LITOSHI) < 1:
+            return await interaction.response.send_message(
+                "Litecoin価格は0.00000001 LTC（1 litoshi）以上にしてください。",
+                ephemeral=True,
+            )
         vending_data = load_json(VENDING_DATA_FILE)
         vm = vending_data.get(vending_machine_id)
         if not vm or vm.get("owner_id") != str(interaction.user.id):
@@ -921,12 +938,6 @@ class VendingMachineCog(commands.Cog):
                 if selected not in available:
                     return await interaction.response.send_message("この支払方法はログアウトまたは期限切れのため利用できません。", ephemeral=True)
 
-                if selected == "ltc":
-                    return await interaction.response.send_message(
-                        "LTC決済は購入者のDMで行います。販売者ウォレットへの自動送金機能は、安全な鍵管理が設定されるまで利用できません。",
-                        ephemeral=True,
-                    )
-
                 embed = discord.Embed(
                     title="購入する商品を選択してください。",
                     color=discord.Color.blue()
@@ -987,6 +998,11 @@ class VendingMachineCog(commands.Cog):
                 return await interaction.response.send_message("購入数には整数を入力してください。", ephemeral=True)
 
             coupon_code = self.coupon_input.value.strip() if self.coupon_input.value else None
+            if coupon_code and self.payment_method == "ltc":
+                return await interaction.response.send_message(
+                    "LTC決済では円建てクーポンを使用できません。",
+                    ephemeral=True,
+                )
             
             discount = 0
             if coupon_code:
@@ -1000,8 +1016,14 @@ class VendingMachineCog(commands.Cog):
                 else:
                     return await interaction.response.send_message("無効なクーポンコードです。", ephemeral=True)
             
-            price_key = f"price_{self.payment_method}"
-            product_price = self.product.get(price_key, self.product.get('price', 0))
+            product_price = get_product_price(self.product, self.payment_method)
+            if self.payment_method == "ltc" and (
+                product_price is None or round(product_price * LITOSHI) < 1
+            ):
+                return await interaction.response.send_message(
+                    "この商品のLTC価格が未設定か、0.00000001 LTC未満です。",
+                    ephemeral=True,
+                )
             
             base_price = product_price * quantity
             total_discount = discount * quantity
@@ -1032,8 +1054,9 @@ class VendingMachineCog(commands.Cog):
                     inline=False
                 )
             else:
+                price_text = format_ltc(final_price) if self.payment_method == "ltc" else str(final_price)
                 unit = " LTC" if self.payment_method == "ltc" else "円"
-                embed.add_field(name="金額", value=f"```{final_price}{unit}```", inline=False)
+                embed.add_field(name="金額", value=f"```{price_text}{unit}```", inline=False)
             
             embed.set_footer(text="Developer @potefura")
             
@@ -1448,15 +1471,15 @@ class VendingMachineCog(commands.Cog):
                     emoji = product.get("emoji")
                     label = f"{product['name']}"
                     
-                    price_key = f"price_{payment_method}"
-                    price = product.get(price_key, product.get('price', 0))
-                    if price is None:
+                    price = get_product_price(product, payment_method)
+                    if price is None or (payment_method == "ltc" and round(price * LITOSHI) < 1):
                         continue
+                    price_text = format_ltc(price) if payment_method == "ltc" else str(price)
                     unit = " LTC" if payment_method == "ltc" else "円"
                     
                     sales_count = product.get("sales_count", 0)
                     if product.get("infinite_stock"):
-                        description = f"価格: {price}{unit}│在庫数: ∞個│販売数: {sales_count}個"
+                        description = f"価格: {price_text}{unit}│在庫数: ∞個│販売数: {sales_count}個"
                     else:
                         try:
                             with open(product.get("stock_file", ""), "r", encoding="utf-8") as f:
@@ -1465,7 +1488,7 @@ class VendingMachineCog(commands.Cog):
                         except:
                             stock_count = 0
                         
-                        description = f"価格: {price}{unit}│在庫数: {stock_count}個│販売数: {sales_count}個"
+                        description = f"価格: {price_text}{unit}│在庫数: {stock_count}個│販売数: {sales_count}個"
                     
                     options.append(discord.SelectOption(
                         label=label,
