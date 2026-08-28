@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import os
 import re
@@ -11,6 +10,7 @@ from pathlib import Path
 
 import discord
 import requests
+from bitcoinlib.wallets import Wallet
 from discord import app_commands, ui
 from discord.ext import commands
 
@@ -35,9 +35,8 @@ def address_balance(address: str) -> tuple[int, int]:
 
 def create_order_wallet(guild_id: int, order_id: str) -> dict:
     """Create a unique bitcoinlib wallet and persist recovery data mode 0600."""
-    wallets = importlib.import_module("bitcoinlib.wallets")
     database = guild_dir(guild_id) / "cache" / "ltc-wallets.sqlite"
-    wallet = wallets.Wallet.create(
+    wallet = Wallet.create(
         f"jihanki-{guild_id}-{order_id}", network="litecoin", db_uri=f"sqlite:///{database.resolve()}"
     )
     key = wallet.get_key()
@@ -57,8 +56,7 @@ def create_order_wallet(guild_id: int, order_id: str) -> dict:
 
 def sweep_order(order: dict, recipient: str, amount: int) -> str:
     """Sign using bitcoinlib, then broadcast the raw transaction via LitecoinSpace."""
-    wallets = importlib.import_module("bitcoinlib.wallets")
-    wallet = wallets.Wallet(order["wallet_name"], db_uri=order["database"])
+    wallet = Wallet(order["wallet_name"], db_uri=order["database"])
     wallet.scan()
     fee = max(2_000, int(amount * 0.001))
     if amount <= fee:
