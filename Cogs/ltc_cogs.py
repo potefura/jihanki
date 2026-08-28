@@ -11,6 +11,15 @@ from pathlib import Path
 import discord
 import requests
 from bitcoinlib.wallets import Wallet, wallet_delete_if_exists
+
+from bitcoinlib.wallets import Wallet, wallet_delete_if_exists
+
+
+from bitcoinlib.wallets import Wallet, wallet_delete_if_exists
+
+from bitcoinlib.wallets import Wallet
+
+
 from discord import app_commands, ui
 from discord.ext import commands
 
@@ -40,6 +49,23 @@ def create_order_wallet(guild_id: int, order_id: str) -> dict:
     database = f"sqlite:///{database_file.resolve()}"
     wallet_name = f"jihanki-{guild_id}-{order_id}"
     wallet = Wallet.create(name=wallet_name, network="litecoin", db_uri=database)
+
+    wallet_name = f"jihanki-{guild_id}-{order_id}"
+    wallet = Wallet.create(
+        name=wallet_name,
+        network="litecoin",
+        db_uri=database,
+
+    wallet = Wallet.create(
+        f"jihanki-{guild_id}-{order_id}", network="litecoin", db_uri=database
+
+    """Create a unique bitcoinlib wallet and persist recovery data mode 0600."""
+    database = guild_dir(guild_id) / "cache" / "ltc-wallets.sqlite"
+    wallet = Wallet.create(
+        f"jihanki-{guild_id}-{order_id}", network="litecoin", db_uri=f"sqlite:///{database.resolve()}"
+
+
+    )
     key = wallet.get_key()
     order = {
         "order_id": order_id,
@@ -72,6 +98,15 @@ def destroy_order_wallet(order: dict) -> None:
 
 def sweep_order(order: dict, recipient: str, amount: int) -> str:
     """Sweep the temporary wallet to the seller, then destroy it."""
+
+    """Sweep the temporary wallet to the seller, then destroy it."""
+
+
+    """Sweep the temporary wallet to the seller, then destroy it."""
+
+    """Sign using bitcoinlib, then broadcast the raw transaction via LitecoinSpace."""
+
+
     wallet = Wallet(order["wallet_name"], db_uri=order["database"])
     wallet.scan()
     fee = max(2_000, int(amount * 0.001))
