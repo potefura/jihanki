@@ -41,14 +41,13 @@ def create_order_wallet(guild_id: int, order_id: str) -> dict:
     wallet_name = f"jihanki-{guild_id}-{order_id}"
     wallet = BitcoinWallet.create(name=wallet_name, network="litecoin", db_uri=database)
     key = wallet.get_key()
+    os.chmod(database_file, 0o600)
     order = {
         "order_id": order_id,
         "wallet_name": wallet.name,
         "database": database,
         "database_file": str(database_file.resolve()),
         "address": key.address,
-        "wif": key.wif,
-        "mnemonic": getattr(wallet, "mnemonic", None),
     }
     path = cache / f"ltc-{order_id}.json"
     order["recovery_file"] = str(path.resolve())

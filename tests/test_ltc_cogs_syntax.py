@@ -27,6 +27,13 @@ class LTCCogSyntaxTests(unittest.TestCase):
         self.assertEqual(call.lineno, call.end_lineno)
         self.assertEqual({"name", "network", "db_uri"}, {keyword.arg for keyword in call.keywords})
 
+    def test_order_metadata_does_not_duplicate_private_keys(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        self.assertNotIn('"wif":', source)
+        self.assertNotIn('"mnemonic":', source)
+        self.assertIn("os.chmod(database_file, 0o600)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -921,12 +921,6 @@ class VendingMachineCog(commands.Cog):
                 if selected not in available:
                     return await interaction.response.send_message("この支払方法はログアウトまたは期限切れのため利用できません。", ephemeral=True)
 
-                if selected == "ltc":
-                    return await interaction.response.send_message(
-                        "LTC決済は購入者のDMで行います。販売者ウォレットへの自動送金機能は、安全な鍵管理が設定されるまで利用できません。",
-                        ephemeral=True,
-                    )
-
                 embed = discord.Embed(
                     title="購入する商品を選択してください。",
                     color=discord.Color.blue()
