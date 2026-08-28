@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import NamedTuple, Optional
 import datetime
+from Cogs.server_data import ensure_guild_files, payment_settings, save_product, set_payment
 
 
 VENDING_DATA_FILE = "vending_data.json"
@@ -394,6 +395,9 @@ class VendingMachineCog(commands.Cog):
     @is_allowed()
     @app_commands.describe(name="自販機の名前")
     async def vm_create(self, interaction: discord.Interaction, name: str):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message("このコマンドはサーバー内で実行してください。", ephemeral=True)
+        ensure_guild_files(interaction.guild_id)
         user_id = str(interaction.user.id)
         vending_data = load_json(VENDING_DATA_FILE)
         new_vm_id = str(uuid.uuid4())
@@ -403,6 +407,9 @@ class VendingMachineCog(commands.Cog):
 
         kyash_data = load_kyash_data()
         kyash_id = user_id if user_id in kyash_data else None
+
+        set_payment(interaction.guild_id, user_id, "paypay", paypay_id is not None)
+        set_payment(interaction.guild_id, user_id, "kyash", kyash_id is not None)
 
         vending_data[new_vm_id] = {
             "name": name,
@@ -516,6 +523,8 @@ class VendingMachineCog(commands.Cog):
         }
         vm["products"].append(new_product)
         save_json(VENDING_DATA_FILE, vending_data)
+        if interaction.guild_id is not None:
+            save_product(interaction.guild_id, vending_machine_id, new_product)
         await interaction.response.send_message(
             f"自販機「{vm['name']}」に商品「{name}」を追加しました。\n"
             f"PayPay: {price_paypay}円 | Kyash: {price_kyash}円",
@@ -567,12 +576,12 @@ class VendingMachineCog(commands.Cog):
         if is_custom:
             title = panel_title if panel_title else "自販機"
             description = panel_description if panel_description else "購入したい商品を下のメニューから選択してください。"
-            embed = discord.Embed(title=title, description=description, color=discord.Color.green())
+            embed = discord.Embed(title=title, description=description, color=discord.Color.blue())
             
             if panel_image:
                 embed.set_image(url=panel_image.url)
         else:
-            embed = discord.Embed(title="自販機", description="購入したい商品を下のメニューから選択してください。", color=discord.Color.green())
+            embed = discord.Embed(title="自販機", description="購入したい商品を下のメニューから選択してください。", color=discord.Color.blue())
         
         embed.set_footer(text="Developer @potefura")
         
@@ -772,7 +781,7 @@ class VendingMachineCog(commands.Cog):
             if is_custom:
                 title = panel_title if panel_title else "自販機"
                 description = panel_description if panel_description else "購入したい商品を下のメニューから選択してください。"
-                embed = discord.Embed(title=title, description=description, color=discord.Color.green())
+                embed = discord.Embed(title=title, description=description, color=discord.Color.blue())
                 
                 if panel_image:
                     embed.set_image(url=panel_image.url)
@@ -780,7 +789,7 @@ class VendingMachineCog(commands.Cog):
                 embed = discord.Embed(
                     title="自販機", 
                     description="購入したい商品を下のメニューから選択してください。", 
-                    color=discord.Color.green()
+                    color=discord.Color.blue()
                 )
             
             embed.set_footer(text="Developer @potefura")
@@ -812,7 +821,7 @@ class VendingMachineCog(commands.Cog):
             embed_success = discord.Embed(
                 title="更新完了",
                 description=f"自販機「{vm['name']}」のパネルを更新しました。",
-                color=discord.Color.green()
+                color=discord.Color.blue()
             )
             embed_success.set_footer(text="Developer @potefura")
             await interaction.followup.send(embed=embed_success, ephemeral=True)
@@ -852,7 +861,7 @@ class VendingMachineCog(commands.Cog):
                 embed = discord.Embed(
                     title="削除完了",
                     description=f"自販機「{self.vm_name}」を削除しました。",
-                    color=discord.Color.green(),
+                    color=discord.Color.blue(),
                     timestamp=discord.utils.utcnow()
                 )
                 embed.set_footer(text="Developer @potefura")
@@ -876,10 +885,10 @@ class VendingMachineCog(commands.Cog):
         def __init__(self, vending_machine_id: str, bot: commands.Bot):
             self.vending_machine_id = vending_machine_id
             self.bot = bot
-            options = [
-                discord.SelectOption(label="PayPay", value="paypay",  emoji="<:emoji_7:1487256597670531163>"),
-                discord.SelectOption(label="Kyash", value="kyash",  emoji="<:emoji_6:1487256579530297425>"),
-            ]
+            # Persistent views are restored before a guild interaction exists;
+            # options are therefore refreshed in ``callback`` and unavailable
+            # methods are rejected server-side as well.
+            options = [discord.SelectOption(label="支払方法を読み込む", value="refresh")]
             super().__init__(
                 placeholder="決済方法を選択してください",
                 options=options,
@@ -893,23 +902,42 @@ class VendingMachineCog(commands.Cog):
                 if not vm:
                     return await interaction.response.send_message("自販機が見つかりません。", ephemeral=True)
                 
+                settings = payment_settings(interaction.guild_id, vm.get("owner_id", ""))
+                available = [method for method in ("paypay", "kyash", "ltc") if settings.get(method)]
+                selected = self.values[0]
+                if selected == "refresh":
+                    if not available:
+                        return await interaction.response.send_message("現在利用できる支払方法はありません。", ephemeral=True)
+                    view = VendingMachineCog.PaymentMethodView(self.vending_machine_id, self.bot, available)
+                    return await interaction.response.send_message("支払方法を選択してください。", view=view, ephemeral=True)
+                if selected not in available:
+                    return await interaction.response.send_message("この支払方法はログアウトまたは期限切れのため利用できません。", ephemeral=True)
+                if selected == "ltc":
+                    return await interaction.response.send_message(
+                        "LTC決済は購入者のDMで行います。販売者ウォレットへの自動送金機能は、安全な鍵管理が設定されるまで利用できません。",
+                        ephemeral=True,
+                    )
                 embed = discord.Embed(
                     title="購入する商品を選択してください。",
-                    color=discord.Color.green()
+                    color=discord.Color.blue()
                 )
                 view = VendingMachineCog.ProductSelectView(
                     self.vending_machine_id, 
                     self.bot,
-                    self.values[0]
+                    selected
                 )
                 await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             except Exception as e:
                 await handle_error(interaction, e)
 
     class PaymentMethodView(ui.View):
-        def __init__(self, vending_machine_id: str, bot: commands.Bot):
+        def __init__(self, vending_machine_id: str, bot: commands.Bot, methods=None):
             super().__init__(timeout=None)
-            self.add_item(VendingMachineCog.PaymentMethodSelect(vending_machine_id, bot))
+            select = VendingMachineCog.PaymentMethodSelect(vending_machine_id, bot)
+            if methods:
+                labels = {"paypay": "PayPay", "kyash": "Kyash", "ltc": "Litecoin (LTC)"}
+                select.options = [discord.SelectOption(label=labels[m], value=m) for m in methods]
+            self.add_item(select)
 
     class CouponModal(ui.Modal, title="購入情報入力"):
         def __init__(self, vending_machine_id: str, product: dict, bot: commands.Bot, payment_method: str):
@@ -1078,6 +1106,8 @@ class VendingMachineCog(commands.Cog):
                             # 初回ログイン（セッション確立）
                             login_result = await pp.login()
                             if not pp.access_token:
+                                if interaction.guild_id is not None:
+                                    set_payment(interaction.guild_id, vm.get("owner_id", ""), "paypay", False)
                                 return await interaction.followup.send(
                                     "販売者のログインに失敗しました。販売者にお問い合わせください。",
                                     ephemeral=True
@@ -1159,6 +1189,7 @@ class VendingMachineCog(commands.Cog):
                                 installation_uuid=owner_kyash_info.get("installation_uuid"),
                                 access_token=owner_kyash_info.get("access_token")
                             )
+                            kyash.get_profile()
                             
                             link_info = kyash.link_check(link)
                             if link_info.amount < self.final_price:
@@ -1170,6 +1201,8 @@ class VendingMachineCog(commands.Cog):
                             kyash.link_receive(link_info.uuid)
                         
                         except KyashError as e:
+                            if "プロフィール取得" in str(e) and interaction.guild_id is not None:
+                                set_payment(interaction.guild_id, vm.get("owner_id", ""), "kyash", False)
                             return await interaction.followup.send(f"Kyash決済エラー: {str(e)}", ephemeral=True)
                         except Exception as e:
                             return await interaction.followup.send(f"決済処理エラー: {str(e)}", ephemeral=True)
@@ -1200,7 +1233,7 @@ class VendingMachineCog(commands.Cog):
                 embed = discord.Embed(
                     title="購入完了",
                     description=f"**商品:** `{self.product['name']}`\n**数量:** `{self.quantity}`個\n**合計金額:** `{price_display}`",
-                    color=discord.Color.green(),
+                    color=discord.Color.blue(),
                     timestamp=discord.utils.utcnow()
                 )
                 embed.add_field(name="購入した商品", value=purchased_content, inline=False)
@@ -1233,7 +1266,7 @@ class VendingMachineCog(commands.Cog):
                     jst = pytz.timezone('Asia/Tokyo')
                     formatted_time = datetime.datetime.now(jst).strftime("%Y/%m/%d %H:%M:%S(JST)")
                     
-                    dm_embed = discord.Embed(title="購入が完了しました", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+                    dm_embed = discord.Embed(title="購入が完了しました", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
                     dm_embed.add_field(name="購入日", value=f"```{formatted_time}```", inline=True)
                     dm_embed.add_field(name="購入サーバー", value=f"```{interaction.guild.name}({interaction.guild.id})```", inline=True)
                     dm_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
@@ -1245,7 +1278,7 @@ class VendingMachineCog(commands.Cog):
                 except:
                     pass
                 
-                colors = [discord.Color.red(), discord.Color.blue(), discord.Color.green(), discord.Color.yellow(), discord.Color.purple(), discord.Color.orange(), discord.Color.pink(), discord.Color.teal(), discord.Color.magenta(), discord.Color.gold()]
+                colors = [discord.Color.red(), discord.Color.blue(), discord.Color.blue(), discord.Color.yellow(), discord.Color.purple(), discord.Color.orange(), discord.Color.pink(), discord.Color.teal(), discord.Color.magenta(), discord.Color.gold()]
                 
                 def create_log_embed():
                     emb = discord.Embed(color=random.choice(colors))
@@ -1498,7 +1531,15 @@ class VendingMachineCog(commands.Cog):
 
         async def callback(self, interaction: discord.Interaction):
             try:
-                view = VendingMachineCog.PaymentMethodView(self.vending_machine_id, self.bot)
+                vending_data = load_json(VENDING_DATA_FILE)
+                vm = vending_data.get(self.vending_machine_id, {})
+                settings = payment_settings(interaction.guild_id, vm.get("owner_id", ""))
+                methods = [method for method in ("paypay", "kyash", "ltc") if settings.get(method)]
+                if not methods:
+                    return await interaction.response.send_message(
+                        "現在利用できる決済方法はありません。販売者にお問い合わせください。", ephemeral=True
+                    )
+                view = VendingMachineCog.PaymentMethodView(self.vending_machine_id, self.bot, methods)
                 await interaction.response.send_message(
                     "決済方法を選択してください。",
                     view=view,
@@ -1641,7 +1682,7 @@ class VendingMachineCog(commands.Cog):
                     if channel and role:
                         embed = discord.Embed(
                             title="在庫追加通知",
-                            color=discord.Color.green(),
+                            color=discord.Color.blue(),
                             timestamp=discord.utils.utcnow()
                         )
                         embed.add_field(name="追加商品", value=f"```{product['name']}```", inline=True)
@@ -1796,7 +1837,7 @@ class VendingMachineCog(commands.Cog):
                     embed = discord.Embed(
                         title="無限在庫解除完了",
                         description=f"**商品:** `{product['name']}`\n**解除された無限在庫内容:**",
-                        color=discord.Color.green(),
+                        color=discord.Color.blue(),
                         timestamp=discord.utils.utcnow()
                     )
                     embed.add_field(name="引き出した無限在庫", value=withdrawn_content, inline=False)
@@ -1827,7 +1868,7 @@ class VendingMachineCog(commands.Cog):
                         embed = discord.Embed(
                             title="在庫引出完了",
                             description=f"**商品:** `{product['name']}`\n**引出数量:** `{self.quantity}`個",
-                            color=discord.Color.green(),
+                            color=discord.Color.blue(),
                             timestamp=discord.utils.utcnow()
                         )
                         embed.add_field(name="引き出した在庫", value=withdrawn_content, inline=False)
@@ -1974,7 +2015,7 @@ class VendingMachineCog(commands.Cog):
                 embed = discord.Embed(
                     title="削除完了",
                     description=f"商品「{self.product['name']}」を削除しました。",
-                    color=discord.Color.green()
+                    color=discord.Color.blue()
                 )
                 embed.set_footer(text="Developer @potefura")
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -2078,7 +2119,7 @@ class VendingMachineCog(commands.Cog):
                     embed = discord.Embed(
                         title="商品情報更新完了",
                         description=f"商品「{self.product['name']}」を更新しました:\n• " + "\n• ".join(updated_fields),
-                        color=discord.Color.green()
+                        color=discord.Color.blue()
                     )
                     embed.set_footer(text="Developer @potefura")
                     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -2107,7 +2148,7 @@ class VendingMachineCog(commands.Cog):
             }
             save_stock_notification_data(notification_data)
             
-            embed = discord.Embed(title="在庫追加通知設定", description=f"自販機「{vm['name']}」の在庫追加通知を設定しました。", color=discord.Color.green())
+            embed = discord.Embed(title="在庫追加通知設定", description=f"自販機「{vm['name']}」の在庫追加通知を設定しました。", color=discord.Color.blue())
             embed.add_field(name="通知チャンネル", value=channel.mention, inline=True)
             embed.add_field(name="メンションロール", value=role.mention, inline=True)
             embed.set_footer(text="Developer @potefura")

@@ -4,6 +4,7 @@ from discord import app_commands
 import json
 import os
 from Kyasher import Kyash, KyashError, KyashLoginError
+from Cogs.server_data import disable_payment_for_all_guilds, ensure_guild_files, set_payment
 
 # セッション保存用ファイル
 KYASH_SESSION_FILE = "kyash_data.json"
@@ -76,11 +77,23 @@ class Vending(commands.Cog):
                 "installation_uuid": kyash.installation_uuid,
                 "access_token": kyash.access_token
             })
+            if interaction.guild_id is not None:
+                ensure_guild_files(interaction.guild_id)
+                set_payment(interaction.guild_id, interaction.user.id, "kyash", True)
             
             del self.login_attempts[interaction.user.id]
             await interaction.followup.send("✅ ログイン成功！セッションが保存されました。")
         except Exception as e:
             await interaction.followup.send(f"❌ 認証失敗: {e}")
+
+    @app_commands.command(name="kyash_logout", description="Kyashからログアウトします")
+    async def kyash_logout(self, interaction: discord.Interaction):
+        sessions = self._load_sessions()
+        sessions.pop(str(interaction.user.id), None)
+        with open(KYASH_SESSION_FILE, "w", encoding="utf-8") as destination:
+            json.dump(sessions, destination, ensure_ascii=False, indent=4)
+        disable_payment_for_all_guilds(interaction.user.id, "kyash")
+        await interaction.response.send_message("Kyashからログアウトしました。", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
