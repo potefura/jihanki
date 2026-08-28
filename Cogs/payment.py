@@ -53,14 +53,6 @@ class PaymentCog(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="ltc無効化", description="LTC決済を支払方法から隠します")
-    @is_allowed()
-    async def disable_ltc(self, interaction: discord.Interaction):
-        if interaction.guild_id is None:
-            return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
-        set_payment(interaction.guild_id, interaction.user.id, "ltc", False)
-        await interaction.response.send_message("LTC決済を無効にしました。", ephemeral=True)
-
     @app_commands.command(name="ltc残高", description="設定済みLTCウォレットの残高を確認します")
     @is_allowed()
     async def show_ltc_balance(self, interaction: discord.Interaction):
