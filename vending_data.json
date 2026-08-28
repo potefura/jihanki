@@ -1,0 +1,36 @@
+{
+    "9b67caad-164a-4417-aa6b-59c43cb8d5bd": {
+        "name": "calcium",
+        "owner_id": "980919616526229585",
+        "paypay_id": "980919616526229585",
+        "kyash_id": null,
+        "log_channel_id": null,
+        "private_log_channel_id": null,
+        "products": [
+            {
+                "product_id": "479e2904-ccd2-4b21-88c5-d7df8ff35484",
+                "name": "カルシウム",
+                "description": "",
+                "price_paypay": 200,
+                "price_kyash": 200,
+                "emoji": null,
+                "stock_file": "stock_files/479e2904-ccd2-4b21-88c5-d7df8ff35484.txt",
+                "infinite_stock": true,
+                "infinite_content": "Test",
+                "sales_count": 1
+            },
+            {
+                "product_id": "03911303-76c6-4cae-9aa3-bd8de12b920a",
+                "name": "1919",
+                "description": "",
+                "price_paypay": 1,
+                "price_kyash": 1,
+                "emoji": null,
+                "stock_file": "stock_files/03911303-76c6-4cae-9aa3-bd8de12b920a.txt",
+                "infinite_stock": true,
+                "infinite_content": "Au",
+                "sales_count": 0
+            }
+        ]
+    }
+}
