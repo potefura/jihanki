@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import os
 import re
@@ -11,6 +10,7 @@ from pathlib import Path
 
 import discord
 import requests
+from bitcoinlib.wallets import Wallet as BitcoinWallet, wallet_delete_if_exists
 from discord import app_commands, ui
 from discord.ext import commands
 
@@ -34,31 +34,44 @@ def address_balance(address: str) -> tuple[int, int]:
 
 
 def create_order_wallet(guild_id: int, order_id: str) -> dict:
-    """Create a unique bitcoinlib wallet and persist recovery data mode 0600."""
-    wallets = importlib.import_module("bitcoinlib.wallets")
-    database = guild_dir(guild_id) / "cache" / "ltc-wallets.sqlite"
-    wallet = wallets.Wallet.create(
-        f"jihanki-{guild_id}-{order_id}", network="litecoin", db_uri=f"sqlite:///{database.resolve()}"
-    )
+    """Create an isolated temporary wallet for one order."""
+    cache = guild_dir(guild_id) / "cache"
+    database_file = cache / f"ltc-{order_id}.sqlite"
+    database = f"sqlite:///{database_file.resolve()}"
+    wallet_name = f"jihanki-{guild_id}-{order_id}"
+    wallet = BitcoinWallet.create(name=wallet_name, network="litecoin", db_uri=database)
     key = wallet.get_key()
+    os.chmod(database_file, 0o600)
     order = {
         "order_id": order_id,
         "wallet_name": wallet.name,
-        "database": f"sqlite:///{database.resolve()}",
+        "database": database,
+        "database_file": str(database_file.resolve()),
         "address": key.address,
-        "wif": key.wif,
-        "mnemonic": getattr(wallet, "mnemonic", None),
     }
-    path = guild_dir(guild_id) / "cache" / f"ltc-{order_id}.json"
+    path = cache / f"ltc-{order_id}.json"
+    order["recovery_file"] = str(path.resolve())
     path.write_text(json.dumps(order, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(path, 0o600)
     return order
 
 
+def destroy_order_wallet(order: dict) -> None:
+    """Remove the temporary wallet and every local recovery artifact."""
+    wallet_delete_if_exists(order["wallet_name"], db_uri=order["database"], force=True)
+    for filename in (
+        order.get("recovery_file"),
+        order.get("database_file"),
+        f"{order.get('database_file')}-wal" if order.get("database_file") else None,
+        f"{order.get('database_file')}-shm" if order.get("database_file") else None,
+    ):
+        if filename:
+            Path(filename).unlink(missing_ok=True)
+
+
 def sweep_order(order: dict, recipient: str, amount: int) -> str:
-    """Sign using bitcoinlib, then broadcast the raw transaction via LitecoinSpace."""
-    wallets = importlib.import_module("bitcoinlib.wallets")
-    wallet = wallets.Wallet(order["wallet_name"], db_uri=order["database"])
+    """Sweep the temporary wallet to the seller, then destroy it."""
+    wallet = BitcoinWallet(order["wallet_name"], db_uri=order["database"])
     wallet.scan()
     fee = max(2_000, int(amount * 0.001))
     if amount <= fee:
@@ -68,7 +81,9 @@ def sweep_order(order: dict, recipient: str, amount: int) -> str:
         f"{LTC_API}/tx", data=transaction.raw_hex(), headers={"Content-Type": "text/plain"}, timeout=15
     )
     response.raise_for_status()
-    return response.text.strip()
+    txid = response.text.strip()
+    destroy_order_wallet(order)
+    return txid
 
 
 class LTCOrderView(ui.View):
@@ -90,6 +105,7 @@ class LTCOrderView(ui.View):
         received = confirmed + pending
         if received == 0 and cancelled:
             self.finished = True
+            await asyncio.to_thread(destroy_order_wallet, self.order)
             return await interaction.followup.send("注文をキャンセルしました。")
         if received < self.required and not cancelled:
             short = (self.required - received) / LITOSHI
@@ -148,7 +164,8 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
     )
     try:
         await interaction.user.send(embed=embed, view=view)
-    except discord.Forbidden:
+    except (discord.Forbidden, discord.HTTPException):
+        await asyncio.to_thread(destroy_order_wallet, order)
         await interaction.response.send_message("DMを受信できるようにしてからやり直してください。", ephemeral=True)
         return False
     await interaction.response.send_message("決済用ウォレットをDMに送りました。", ephemeral=True)
@@ -158,20 +175,12 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
 class LTCCog(commands.Cog):
     def __init__(self, bot): self.bot = bot
 
-    @app_commands.command(name="ltc登録", description="売上受取用Litecoinウォレットを登録します")
-    @is_allowed()
-    async def register(self, interaction: discord.Interaction, address: str):
-        if not interaction.guild_id or not LTC_ADDRESS.fullmatch(address.strip()):
-            return await interaction.response.send_message("サーバー内で正しいLTCアドレスを指定してください。", ephemeral=True)
-        set_payment(interaction.guild_id, interaction.user.id, "ltc", True, ltc_wallet=address.strip())
-        await interaction.response.send_message(embed=discord.Embed(title="LTC登録完了", color=discord.Color.blue()), ephemeral=True)
-
     @app_commands.command(name="ltc有効化", description="登録済みLTC決済を有効化します")
     @is_allowed()
     async def enable(self, interaction: discord.Interaction):
         settings = payment_settings(interaction.guild_id, interaction.user.id)
         if not settings.get("ltc_wallet"):
-            return await interaction.response.send_message("先に `/ltc登録` を実行してください。", ephemeral=True)
+            return await interaction.response.send_message("先に `/ltcウォレット設定` で売上の受取先を設定してください。", ephemeral=True)
         set_payment(interaction.guild_id, interaction.user.id, "ltc", True)
         await interaction.response.send_message("LTC決済を有効化しました。", ephemeral=True)
 
