@@ -1,5 +1,6 @@
 # vending.py (Part 1 - First half)
 from __future__ import annotations
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands, ui
@@ -15,6 +16,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import NamedTuple, Optional
 import datetime
+from decimal import Decimal, InvalidOperation, ROUND_UP
 from Cogs.server_data import ensure_guild_files, payment_settings, save_product, set_payment
 from Cogs.ltc_cogs import start_ltc_order
 
@@ -27,6 +29,35 @@ STOCK_NOTIFICATION_DATA_FILE = "stock_notification_data.json"
 COUPON_DATA_FILE = "coupon_data.json"
 ROLE_ASSIGNMENT_DATA_FILE = "role_assignment_data.json"
 USED_LINKS_FILE = "used_paypay_links.json"
+LTC_RATE_API = "https://api.coinbase.com/v2/exchange-rates"
+
+
+def get_yen_price(product: dict) -> int:
+    """Return the product's single price shared by every payment method."""
+    return int(product.get("price", 0))
+
+
+def format_ltc(amount) -> str:
+    return f"{Decimal(str(amount)):.8f}".rstrip("0").rstrip(".")
+
+
+def fetch_ltc_jpy_rate() -> Decimal:
+    """Fetch the number of yen currently worth one LTC."""
+    response = requests.get(LTC_RATE_API, params={"currency": "LTC"}, timeout=10)
+    response.raise_for_status()
+    rate = Decimal(response.json()["data"]["rates"]["JPY"])
+    if rate <= 0:
+        raise ValueError("LTC/JPY rate must be positive")
+    return rate
+
+
+def convert_yen_to_ltc(yen: int, rate: Decimal, discount_percent=0) -> Decimal:
+    """Convert the common yen price to LTC, rounding up to one litoshi."""
+    discount = Decimal(str(discount_percent or 0))
+    if yen <= 0 or not Decimal("0") <= discount <= Decimal("100"):
+        raise ValueError("Invalid yen price or LTC discount")
+    discounted_yen = Decimal(yen) * (Decimal("100") - discount) / Decimal("100")
+    return (discounted_yen / rate).quantize(Decimal("0.00000001"), rounding=ROUND_UP)
 
 def is_link_used(link: str) -> bool:
     if not os.path.exists(USED_LINKS_FILE): return False
@@ -50,13 +81,39 @@ os.makedirs(STOCK_DIR, exist_ok=True)
 
 stock_file_path = os.path.join(STOCK_DIR, f"{uuid.uuid4()}.txt")
 
+def migrate_vending_prices(data: dict) -> bool:
+    """Persist old per-payment prices as one shared price and remove old fields."""
+    changed = False
+    for machine in data.values():
+        if not isinstance(machine, dict):
+            continue
+        for product in machine.get("products", []):
+            if "price" not in product:
+                old_price = product.get("price_paypay")
+                if old_price is None:
+                    old_price = product.get("price_kyash", 0)
+                product["price"] = int(old_price or 0)
+                changed = True
+            if "ltc_discount_percent" not in product:
+                product["ltc_discount_percent"] = 0
+                changed = True
+            for old_field in ("price_paypay", "price_kyash", "price_ltc"):
+                if old_field in product:
+                    product.pop(old_field)
+                    changed = True
+    return changed
+
+
 def load_json(file_path: str) -> dict:
     if os.path.exists(file_path):
         with open(file_path, "r", encoding="utf-8") as f:
             try:
-                return json.load(f)
+                data = json.load(f)
             except json.JSONDecodeError:
                 return {}
+        if file_path == VENDING_DATA_FILE and migrate_vending_prices(data):
+            save_json(file_path, data)
+        return data
     return {}
 
 def save_json(file_path: str, data: dict) -> None:
@@ -136,7 +193,7 @@ async def vending_machine_autocomplete(interaction: discord.Interaction, current
         app_commands.Choice(name=vm_data.get("name", "名称未設定"), value=vm_id)
         for vm_id, vm_data in user_machines
         if current.lower() in vm_data.get("name", "").lower()
-    ]
+    ][:25]
 
 async def coupon_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     coupon_data = load_coupon_data()
@@ -486,9 +543,8 @@ class VendingMachineCog(commands.Cog):
         vending_machine_id="商品を登録する自販機",
         name="商品名",
         description="商品説明（任意）",
-        price_paypay="PayPay価格",
-        price_kyash="Kyash価格",
-        price_ltc="Litecoin価格（LTC）",
+        価格="全決済共通の円価格",
+        ltc割引率="LTC決済の割引率（0〜100%）",
         emoji="商品絵文字"
     )
     async def vm_add_product(
@@ -496,12 +552,20 @@ class VendingMachineCog(commands.Cog):
         interaction: discord.Interaction, 
         vending_machine_id: str, 
         name: str, 
-        price_paypay: int,
-        price_kyash: int,
-        price_ltc: Optional[float] = None,
+        価格: int,
+        ltc割引率: Optional[float] = 0.0,
         description: Optional[str] = None, 
         emoji: Optional[str] = None
     ):
+        if 価格 < 1:
+            return await interaction.response.send_message(
+                "価格は1円以上にしてください。",
+                ephemeral=True,
+            )
+        if ltc割引率 is None:
+            ltc割引率 = 0
+        if not 0 <= ltc割引率 <= 100:
+            return await interaction.response.send_message("LTC割引率は0〜100%にしてください。", ephemeral=True)
         vending_data = load_json(VENDING_DATA_FILE)
         vm = vending_data.get(vending_machine_id)
         if not vm or vm.get("owner_id") != str(interaction.user.id):
@@ -516,9 +580,8 @@ class VendingMachineCog(commands.Cog):
             "product_id": product_id,
             "name": name,
             "description": description or "",
-            "price_paypay": price_paypay,
-            "price_kyash": price_kyash,
-            "price_ltc": price_ltc,
+            "price": 価格,
+            "ltc_discount_percent": ltc割引率,
             "emoji": emoji,
             "stock_file": stock_file_path,
             "infinite_stock": False,
@@ -531,7 +594,7 @@ class VendingMachineCog(commands.Cog):
             save_product(interaction.guild_id, vending_machine_id, new_product)
         await interaction.response.send_message(
             f"自販機「{vm['name']}」に商品「{name}」を追加しました。\n"
-            f"PayPay: {price_paypay}円 | Kyash: {price_kyash}円",
+            f"共通価格: {価格}円 | LTC割引: {ltc割引率:g}%",
             ephemeral=True
         )
 
@@ -592,11 +655,9 @@ class VendingMachineCog(commands.Cog):
         products = vm.get("products", [])
         if products:
             for p in products:
-                paypay_price = p.get('price_paypay', '未設定')
-                kyash_price = p.get('price_kyash', '未設定')
-                ltc_price = p.get('price_ltc')
-                ltc_text = f" | LTC: {ltc_price} LTC" if ltc_price is not None else ""
-                price_text = f"```PayPay: {paypay_price}円 | Kyash: {kyash_price}円{ltc_text}```"
+                yen_price = get_yen_price(p)
+                ltc_discount = p.get("ltc_discount_percent", 0)
+                price_text = f"```価格: {yen_price}円 | LTC割引: {ltc_discount:g}%（決済時に円から換算）```"
                 product_description = p.get('description', '').strip()
                 if product_description:
                     value = f"{product_description}\n{price_text}"
@@ -803,11 +864,9 @@ class VendingMachineCog(commands.Cog):
             products = vm.get("products", [])
             if products:
                 for p in products:
-                    paypay_price = p.get('price_paypay', '未設定')
-                    kyash_price = p.get('price_kyash', '未設定')
-                    ltc_price = p.get('price_ltc')
-                    ltc_text = f" | LTC: {ltc_price} LTC" if ltc_price is not None else ""
-                    price_text = f"```PayPay: {paypay_price}円 | Kyash: {kyash_price}円{ltc_text}```"
+                    yen_price = get_yen_price(p)
+                    ltc_discount = p.get("ltc_discount_percent", 0)
+                    price_text = f"```価格: {yen_price}円 | LTC割引: {ltc_discount:g}%（決済時に円から換算）```"
                     product_description = p.get('description', '').strip()
                     if product_description:
                         value = f"{product_description}\n{price_text}"
@@ -921,12 +980,6 @@ class VendingMachineCog(commands.Cog):
                 if selected not in available:
                     return await interaction.response.send_message("この支払方法はログアウトまたは期限切れのため利用できません。", ephemeral=True)
 
-                if selected == "ltc":
-                    return await interaction.response.send_message(
-                        "LTC決済は購入者のDMで行います。販売者ウォレットへの自動送金機能は、安全な鍵管理が設定されるまで利用できません。",
-                        ephemeral=True,
-                    )
-
                 embed = discord.Embed(
                     title="購入する商品を選択してください。",
                     color=discord.Color.blue()
@@ -987,6 +1040,11 @@ class VendingMachineCog(commands.Cog):
                 return await interaction.response.send_message("購入数には整数を入力してください。", ephemeral=True)
 
             coupon_code = self.coupon_input.value.strip() if self.coupon_input.value else None
+            if coupon_code and self.payment_method == "ltc":
+                return await interaction.response.send_message(
+                    "LTC決済では円建てクーポンを使用できません。",
+                    ephemeral=True,
+                )
             
             discount = 0
             if coupon_code:
@@ -1000,8 +1058,23 @@ class VendingMachineCog(commands.Cog):
                 else:
                     return await interaction.response.send_message("無効なクーポンコードです。", ephemeral=True)
             
-            price_key = f"price_{self.payment_method}"
-            product_price = self.product.get(price_key, self.product.get('price', 0))
+            yen_price = get_yen_price(self.product)
+            if yen_price < 1:
+                return await interaction.response.send_message("この商品の価格が未設定です。", ephemeral=True)
+
+            if self.payment_method == "ltc":
+                try:
+                    rate = await asyncio.to_thread(fetch_ltc_jpy_rate)
+                    product_price = convert_yen_to_ltc(
+                        yen_price, rate, self.product.get("ltc_discount_percent", 0)
+                    )
+                except (requests.RequestException, KeyError, ValueError, InvalidOperation):
+                    return await interaction.response.send_message(
+                        "LTCの現在レートを取得できませんでした。少し待ってからやり直してください。",
+                        ephemeral=True,
+                    )
+            else:
+                product_price = yen_price
             
             base_price = product_price * quantity
             total_discount = discount * quantity
@@ -1032,8 +1105,16 @@ class VendingMachineCog(commands.Cog):
                     inline=False
                 )
             else:
+                price_text = format_ltc(final_price) if self.payment_method == "ltc" else str(final_price)
                 unit = " LTC" if self.payment_method == "ltc" else "円"
-                embed.add_field(name="金額", value=f"```{final_price}{unit}```", inline=False)
+                embed.add_field(name="金額", value=f"```{price_text}{unit}```", inline=False)
+                if self.payment_method == "ltc":
+                    discount = self.product.get("ltc_discount_percent", 0)
+                    embed.add_field(
+                        name="換算内容",
+                        value=f"```{yen_price}円 / 1 LTC = {rate:,.2f}円 / LTC割引 {discount:g}%```",
+                        inline=False,
+                    )
             
             embed.set_footer(text="Developer @potefura")
             
@@ -1251,7 +1332,10 @@ class VendingMachineCog(commands.Cog):
                     purchased_content = f"```\n{''.join(purchased_items).strip()}\n```"
                     purchased_content_text = ''.join(purchased_items).strip()
                 
-                price_display = "0円" if self.final_price == 0 else f"{self.final_price}円"
+                if self.payment_method == "ltc":
+                    price_display = f"{format_ltc(self.final_price)} LTC"
+                else:
+                    price_display = f"{self.final_price}円"
                 
                 embed = discord.Embed(
                     title="購入完了",
@@ -1448,15 +1532,16 @@ class VendingMachineCog(commands.Cog):
                     emoji = product.get("emoji")
                     label = f"{product['name']}"
                     
-                    price_key = f"price_{payment_method}"
-                    price = product.get(price_key, product.get('price', 0))
-                    if price is None:
+                    price = get_yen_price(product)
+                    if price < 1:
                         continue
-                    unit = " LTC" if payment_method == "ltc" else "円"
+                    discount = product.get("ltc_discount_percent", 0)
+                    price_text = f"{price}円から換算（{discount:g}%割引）" if payment_method == "ltc" else str(price)
+                    unit = "" if payment_method == "ltc" else "円"
                     
                     sales_count = product.get("sales_count", 0)
                     if product.get("infinite_stock"):
-                        description = f"価格: {price}{unit}│在庫数: ∞個│販売数: {sales_count}個"
+                        description = f"価格: {price_text}{unit}│在庫数: ∞個│販売数: {sales_count}個"
                     else:
                         try:
                             with open(product.get("stock_file", ""), "r", encoding="utf-8") as f:
@@ -1465,7 +1550,7 @@ class VendingMachineCog(commands.Cog):
                         except:
                             stock_count = 0
                         
-                        description = f"価格: {price}{unit}│在庫数: {stock_count}個│販売数: {sales_count}個"
+                        description = f"価格: {price_text}{unit}│在庫数: {stock_count}個│販売数: {sales_count}個"
                     
                     options.append(discord.SelectOption(
                         label=label,
@@ -1473,6 +1558,8 @@ class VendingMachineCog(commands.Cog):
                         description=description,
                         emoji=emoji
                     ))
+                    if len(options) == 25:
+                        break
             
             if not options:
                 options.append(discord.SelectOption(label="商品なし", value="none", description="現在販売中の商品はありません"))
@@ -2085,8 +2172,8 @@ class VendingMachineCog(commands.Cog):
     class EditProductModal(ui.Modal, title="商品情報編集"):
         name_input = ui.TextInput(label="商品名", placeholder="新しい商品名を入力...", required=False, max_length=100)
         description_input = ui.TextInput(label="商品説明", style=discord.TextStyle.long, placeholder="新しい商品説明を入力...", required=False, max_length=1000)
-        price_paypay_input = ui.TextInput(label="PayPay価格", placeholder="新しいPayPay価格を入力...", required=False, max_length=10)
-        price_kyash_input = ui.TextInput(label="Kyash価格", placeholder="新しいKyash価格を入力...", required=False, max_length=10)
+        price_input = ui.TextInput(label="共通価格（円）", placeholder="PayPay・Kyash共通価格", required=False, max_length=10)
+        ltc_discount_input = ui.TextInput(label="LTC割引率（%）", placeholder="0〜100", required=False, max_length=6)
         emoji_input = ui.TextInput(label="絵文字", placeholder="新しい絵文字を入力...", required=False, max_length=50)
 
         def __init__(self, product: dict, vending_machine_id: str):
@@ -2095,8 +2182,8 @@ class VendingMachineCog(commands.Cog):
             self.vending_machine_id = vending_machine_id
             self.name_input.default = product.get("name", "")
             self.description_input.default = product.get("description", "")
-            self.price_paypay_input.default = str(product.get("price_paypay", 0))
-            self.price_kyash_input.default = str(product.get("price_kyash", 0))
+            self.price_input.default = str(get_yen_price(product))
+            self.ltc_discount_input.default = str(product.get("ltc_discount_percent", 0))
             self.emoji_input.default = product.get("emoji", "")
 
         async def on_submit(self, interaction: discord.Interaction):
@@ -2115,26 +2202,26 @@ class VendingMachineCog(commands.Cog):
                             if self.description_input.value is not None:
                                 p["description"] = self.description_input.value.strip()
                                 updated_fields.append("商品説明")
-                            if self.price_paypay_input.value.strip():
+                            if self.price_input.value.strip():
                                 try:
-                                    new_price = int(self.price_paypay_input.value.strip())
-                                    if new_price >= 0:
-                                        p["price_paypay"] = new_price
-                                        updated_fields.append("PayPay価格")
+                                    new_price = int(self.price_input.value.strip())
+                                    if new_price >= 1:
+                                        p["price"] = new_price
+                                        updated_fields.append("共通価格")
                                     else:
-                                        return await interaction.followup.send("PayPay価格は0以上で入力してください。", ephemeral=True)
+                                        return await interaction.followup.send("価格は1円以上で入力してください。", ephemeral=True)
                                 except ValueError:
-                                    return await interaction.followup.send("PayPay価格には整数を入力してください。", ephemeral=True)
-                            if self.price_kyash_input.value.strip():
+                                    return await interaction.followup.send("価格には整数を入力してください。", ephemeral=True)
+                            if self.ltc_discount_input.value.strip():
                                 try:
-                                    new_price = int(self.price_kyash_input.value.strip())
-                                    if new_price >= 0:
-                                        p["price_kyash"] = new_price
-                                        updated_fields.append("Kyash価格")
+                                    new_discount = float(self.ltc_discount_input.value.strip())
+                                    if 0 <= new_discount <= 100:
+                                        p["ltc_discount_percent"] = new_discount
+                                        updated_fields.append("LTC割引率")
                                     else:
-                                        return await interaction.followup.send("Kyash価格は0以上で入力してください。", ephemeral=True)
+                                        return await interaction.followup.send("LTC割引率は0〜100%で入力してください。", ephemeral=True)
                                 except ValueError:
-                                    return await interaction.followup.send("Kyash価格には整数を入力してください。", ephemeral=True)
+                                    return await interaction.followup.send("LTC割引率には数値を入力してください。", ephemeral=True)
                             if self.emoji_input.value.strip():
                                 p["emoji"] = self.emoji_input.value.strip()
                                 updated_fields.append("絵文字")
