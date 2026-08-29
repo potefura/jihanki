@@ -33,8 +33,8 @@ LTC_RATE_API = "https://api.coinbase.com/v2/exchange-rates"
 
 
 def get_yen_price(product: dict) -> int:
-    """Return the shared yen price, upgrading legacy payment-specific prices."""
-    return int(product.get("price", product.get("price_paypay", product.get("price_kyash", 0))))
+    """Return the product's single price shared by every payment method."""
+    return int(product.get("price", 0))
 
 
 def format_ltc(amount) -> str:
@@ -81,13 +81,39 @@ os.makedirs(STOCK_DIR, exist_ok=True)
 
 stock_file_path = os.path.join(STOCK_DIR, f"{uuid.uuid4()}.txt")
 
+def migrate_vending_prices(data: dict) -> bool:
+    """Persist old per-payment prices as one shared price and remove old fields."""
+    changed = False
+    for machine in data.values():
+        if not isinstance(machine, dict):
+            continue
+        for product in machine.get("products", []):
+            if "price" not in product:
+                old_price = product.get("price_paypay")
+                if old_price is None:
+                    old_price = product.get("price_kyash", 0)
+                product["price"] = int(old_price or 0)
+                changed = True
+            if "ltc_discount_percent" not in product:
+                product["ltc_discount_percent"] = 0
+                changed = True
+            for old_field in ("price_paypay", "price_kyash", "price_ltc"):
+                if old_field in product:
+                    product.pop(old_field)
+                    changed = True
+    return changed
+
+
 def load_json(file_path: str) -> dict:
     if os.path.exists(file_path):
         with open(file_path, "r", encoding="utf-8") as f:
             try:
-                return json.load(f)
+                data = json.load(f)
             except json.JSONDecodeError:
                 return {}
+        if file_path == VENDING_DATA_FILE and migrate_vending_prices(data):
+            save_json(file_path, data)
+        return data
     return {}
 
 def save_json(file_path: str, data: dict) -> None:
@@ -167,7 +193,7 @@ async def vending_machine_autocomplete(interaction: discord.Interaction, current
         app_commands.Choice(name=vm_data.get("name", "名称未設定"), value=vm_id)
         for vm_id, vm_data in user_machines
         if current.lower() in vm_data.get("name", "").lower()
-    ]
+    ][:25]
 
 async def coupon_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     coupon_data = load_coupon_data()
@@ -1549,6 +1575,8 @@ class VendingMachineCog(commands.Cog):
                         description=description,
                         emoji=emoji
                     ))
+                    if len(options) == 25:
+                        break
             
             if not options:
                 options.append(discord.SelectOption(label="商品なし", value="none", description="現在販売中の商品はありません"))
@@ -2196,9 +2224,6 @@ class VendingMachineCog(commands.Cog):
                                     new_price = int(self.price_input.value.strip())
                                     if new_price >= 1:
                                         p["price"] = new_price
-                                        p.pop("price_paypay", None)
-                                        p.pop("price_kyash", None)
-                                        p.pop("price_ltc", None)
                                         updated_fields.append("共通価格")
                                     else:
                                         return await interaction.followup.send("価格は1円以上で入力してください。", ephemeral=True)

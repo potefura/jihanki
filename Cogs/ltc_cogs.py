@@ -120,7 +120,7 @@ class LTCOrderView(ui.View):
         if received == 0 and cancelled:
             self.finished = True
             await asyncio.to_thread(destroy_order_wallet, self.order)
-            return await interaction.followup.send(embed=order_embed("注文キャンセル", "注文をキャンセルしました。"))
+            return await interaction.followup.send("注文をキャンセルしました。")
         if received < self.required and not cancelled:
             short = (self.required - received) / LITOSHI
             return await interaction.followup.send(
@@ -193,13 +193,7 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
         await interaction.user.send(embed=embed, view=view)
     except (discord.Forbidden, discord.HTTPException):
         await asyncio.to_thread(destroy_order_wallet, order)
-        await interaction.followup.send(
-            embed=order_embed(
-                "DMを送信できませんでした",
-                "サーバーメンバーからのDMを受信できるようにしてから、もう一度やり直してください。",
-                error=True,
-            )
-        )
+        await interaction.response.send_message("DMを受信できるようにしてからやり直してください。", ephemeral=True)
         return False
     await interaction.followup.send(embed=order_embed("DMを送信しました", "決済用ウォレットをDMに送りました。"))
     return True
