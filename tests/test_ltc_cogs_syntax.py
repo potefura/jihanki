@@ -34,6 +34,37 @@ class LTCCogSyntaxTests(unittest.TestCase):
         self.assertNotIn('"mnemonic":', source)
         self.assertIn("os.chmod(database_file, 0o600)", source)
 
+    def test_checkout_acknowledges_before_creating_the_wallet(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        defer_position = source.index("await interaction.response.defer(ephemeral=True)", source.index("async def start_ltc_order"))
+        wallet_position = source.index("create_order_wallet", defer_position)
+        self.assertLess(defer_position, wallet_position)
+
+    def test_dm_statuses_use_embeds_and_copyable_amount(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        self.assertIn('name="送金額（タップしてコピー）"', source)
+        self.assertIn('order_embed("決済が完了しました"', source)
+        self.assertNotIn('interaction.response.send_message("DMを受信できるようにしてからやり直してください。"', source)
+
+    def test_order_has_expiry_and_paid_button_rate_limit(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        self.assertIn("timeout=3600", source)
+        self.assertIn("async def on_timeout", source)
+        self.assertIn("timedelta(hours=1)", source)
+        self.assertIn("len(attempts) >= 5", source)
+        self.assertIn('"DMを送信しました", "決済用ウォレットをDMに送りました。"), ephemeral=True', source)
+
+    def test_underpayment_is_forwarded_to_the_seller(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        underpayment = source[source.index("if received < self.required"):source.index("target = received")]
+        self.assertIn("sweep_order", underpayment)
+        self.assertIn("受領済みLTCは販売者へ送金しました", underpayment)
+        self.assertIn("confirmed < received", underpayment)
+
 
 if __name__ == "__main__":
     unittest.main()
