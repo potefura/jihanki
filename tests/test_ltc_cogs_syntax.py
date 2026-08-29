@@ -57,6 +57,14 @@ class LTCCogSyntaxTests(unittest.TestCase):
         self.assertIn("len(attempts) >= 5", source)
         self.assertIn('"DMを送信しました", "決済用ウォレットをDMに送りました。"), ephemeral=True', source)
 
+    def test_underpayment_is_forwarded_to_the_seller(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        underpayment = source[source.index("if received < self.required"):source.index("target = received")]
+        self.assertIn("sweep_order", underpayment)
+        self.assertIn("受領済みLTCは販売者へ送金しました", underpayment)
+        self.assertIn("confirmed < received", underpayment)
+
 
 if __name__ == "__main__":
     unittest.main()

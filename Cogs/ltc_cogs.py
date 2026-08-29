@@ -106,6 +106,7 @@ class LTCOrderView(ui.View):
         self.finished = False
         self.success_callback = success_callback
         self.paid_attempts: dict[int, deque[float]] = defaultdict(deque)
+        self.settle_lock = asyncio.Lock()
 
     async def on_timeout(self) -> None:
         """Discard an unpaid temporary wallet when the one-hour order expires."""
@@ -150,8 +151,52 @@ class LTCOrderView(ui.View):
             return await interaction.followup.send(embed=order_embed("注文キャンセル", "注文をキャンセルしました。"))
         if received < self.required and not cancelled:
             short = (self.required - received) / LITOSHI
+            if confirmed < received:
+                await interaction.followup.send(
+                    embed=order_embed(
+                        "入金額不足・承認待ち",
+                        f"必要額より少ない入金を確認しました。承認後、受領済みのLTCを販売者へ送金します。\n"
+                        f"不足額\n```text\n{short:.8f} LTC\n```",
+                        error=True,
+                    )
+                )
+                for _ in range(60):
+                    await asyncio.sleep(30)
+                    try:
+                        confirmed, pending = await asyncio.to_thread(address_balance, self.order["address"])
+                    except requests.RequestException:
+                        continue
+                    if confirmed >= received:
+                        break
+                else:
+                    return await interaction.followup.send(
+                        embed=order_embed(
+                            "承認待ちタイムアウト",
+                            "入金承認後にもう一度「送金完了」を押してください。受領済みLTCは販売者へ送金されます。",
+                            error=True,
+                        )
+                    )
+            try:
+                txid = await asyncio.to_thread(sweep_order, self.order, self.seller_wallet, confirmed)
+            except (requests.RequestException, ValueError) as error:
+                return await interaction.followup.send(
+                    embed=order_embed(
+                        "不足入金の送金エラー",
+                        f"受領済みLTCを販売者へ送金できませんでした。もう一度押してください。\n```text\n{error}\n```",
+                        error=True,
+                    )
+                )
+            self.finished = True
+            for child in self.children:
+                child.disabled = True
             return await interaction.followup.send(
-                embed=order_embed("入金額不足", f"あと次の金額が必要です。\n```text\n{short:.8f} LTC\n```", error=True)
+                embed=order_embed(
+                    "入金額不足",
+                    f"決済は完了していません。受領済みLTCは販売者へ送金しました。\n"
+                    f"不足額\n```text\n{short:.8f} LTC\n```\n"
+                    f"トランザクションID\n```text\n{txid}\n```",
+                    error=True,
+                )
             )
         target = received if cancelled else self.required
         if confirmed < target:
@@ -193,11 +238,13 @@ class LTCOrderView(ui.View):
             return await interaction.response.send_message(
                 embed=order_embed("レート制限", "「送金完了」は1分間に5回まで押せます。少し待ってからやり直してください。", error=True)
             )
-        await self._settle(interaction)
+        async with self.settle_lock:
+            await self._settle(interaction)
 
     @ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
-        await self._settle(interaction, cancelled=True)
+        async with self.settle_lock:
+            await self._settle(interaction, cancelled=True)
 
 
 async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amount_ltc: float, success_callback=None) -> bool:
