@@ -1120,12 +1120,17 @@ class VendingMachineCog(commands.Cog):
             else:
                 if self.payment_method == "ltc":
                     vm = load_json(VENDING_DATA_FILE).get(self.vending_machine_id, {})
+                    purchase_guild = interaction.guild
                     await start_ltc_order(
                         interaction,
                         vm.get("owner_id", ""),
                         self.final_price,
                         lambda paid_interaction: self.process_purchase(
-                            paid_interaction, None, skip_payment=True, already_deferred=True
+                            paid_interaction,
+                            None,
+                            skip_payment=True,
+                            already_deferred=True,
+                            purchase_guild=purchase_guild,
                         ),
                     )
                     return
@@ -1147,9 +1152,19 @@ class VendingMachineCog(commands.Cog):
                     )
                 await interaction.response.send_modal(modal)
 
-        async def process_purchase(self, interaction: discord.Interaction, link: Optional[str], skip_payment=False, already_deferred=False):
+        async def process_purchase(
+            self,
+            interaction: discord.Interaction,
+            link: Optional[str],
+            skip_payment=False,
+            already_deferred=False,
+            purchase_guild: Optional[discord.Guild] = None,
+        ):
+            # LTC confirmation buttons are pressed in DM, where interaction.guild
+            # is None. Retain the guild in which checkout originally began.
+            purchase_guild = purchase_guild or interaction.guild
             if not already_deferred:
-                await interaction.response.defer(ephemeral=True)
+                await interaction.response.defer()
             
             try:
                 vending_data = load_json(VENDING_DATA_FILE)
@@ -1319,7 +1334,7 @@ class VendingMachineCog(commands.Cog):
                 )
                 embed.add_field(name="購入した商品", value=purchased_content, inline=False)
                 embed.set_footer(text="Developer @potefura")
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed)
                 
                 vending_data = load_json(VENDING_DATA_FILE)
                 if self.vending_machine_id in vending_data and isinstance(vending_data[self.vending_machine_id], dict):
@@ -1334,10 +1349,11 @@ class VendingMachineCog(commands.Cog):
                 try:
                     role_data = load_role_assignment_data()
                     role_info = role_data.get(self.vending_machine_id)
-                    if role_info and role_info.get("guild_id") == interaction.guild.id:
-                        role = interaction.guild.get_role(int(role_info.get("role_id")))
-                        if role and role not in interaction.user.roles:
-                            await interaction.user.add_roles(role)
+                    if purchase_guild and role_info and role_info.get("guild_id") == purchase_guild.id:
+                        role = purchase_guild.get_role(int(role_info.get("role_id")))
+                        member = purchase_guild.get_member(interaction.user.id)
+                        if role and member and role not in member.roles:
+                            await member.add_roles(role)
                 except:
                     pass
 
@@ -1349,7 +1365,8 @@ class VendingMachineCog(commands.Cog):
                     
                     dm_embed = discord.Embed(title="購入が完了しました", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
                     dm_embed.add_field(name="購入日", value=f"```{formatted_time}```", inline=True)
-                    dm_embed.add_field(name="購入サーバー", value=f"```{interaction.guild.name}({interaction.guild.id})```", inline=True)
+                    guild_display = f"{purchase_guild.name}({purchase_guild.id})" if purchase_guild else "不明"
+                    dm_embed.add_field(name="購入サーバー", value=f"```{guild_display}```", inline=True)
                     dm_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
                     dm_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
                     dm_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
@@ -1365,7 +1382,7 @@ class VendingMachineCog(commands.Cog):
                     emb = discord.Embed(color=random.choice(colors))
                     emb.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
                     emb.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
-                    emb.add_field(name="購入サーバー", value=f"```{interaction.guild.name}```", inline=True)
+                    emb.add_field(name="購入サーバー", value=f"```{purchase_guild.name if purchase_guild else '不明'}```", inline=True)
                     emb.add_field(name="購入者", value=f"{interaction.user.mention}({interaction.user.id})", inline=True)
                     emb.add_field(name="決済方法", value=f"```{self.payment_method.upper()}```", inline=True)
                     emb.set_footer(text="Developer @potefura")
@@ -1382,7 +1399,7 @@ class VendingMachineCog(commands.Cog):
                     except:
                         pass
 
-                local_channel_id = vm.get("server_logs", {}).get(str(interaction.guild.id))
+                local_channel_id = vm.get("server_logs", {}).get(str(purchase_guild.id)) if purchase_guild else None
                 if local_channel_id:
                     try:
                         local_log_channel = self.bot.get_channel(int(local_channel_id))
@@ -1399,7 +1416,7 @@ class VendingMachineCog(commands.Cog):
                             private_log_embed = discord.Embed(color=discord.Color.orange())
                             private_log_embed.add_field(name="商品名", value=f"```{self.product['name']}```", inline=True)
                             private_log_embed.add_field(name="購入数", value=f"```{self.quantity}個```", inline=True)
-                            private_log_embed.add_field(name="購入サーバー", value=f"```{interaction.guild.name}```", inline=True)
+                            private_log_embed.add_field(name="購入サーバー", value=f"```{purchase_guild.name if purchase_guild else '不明'}```", inline=True)
                             private_log_embed.add_field(name="購入者", value=f"{interaction.user.mention}")
                             private_log_embed.add_field(name="支払金額", value=f"```{price_display}```", inline=True)
                             private_log_embed.add_field(name="決済方法", value=f"```{self.payment_method.upper()}```", inline=True)

@@ -30,6 +30,18 @@ class LTCCheckoutSourceTests(unittest.TestCase):
         self.assertNotIn('label="PayPay価格"', source)
         self.assertNotIn('label="Kyash価格"', source)
 
+    def test_dm_checkout_retains_the_originating_guild(self):
+        source = VENDING_COG.read_text(encoding="utf-8")
+
+        self.assertIn("purchase_guild = interaction.guild", source)
+        self.assertIn("purchase_guild=purchase_guild", source)
+        self.assertIn("purchase_guild or interaction.guild", source)
+
+    def test_purchase_result_is_not_ephemeral(self):
+        source = VENDING_COG.read_text(encoding="utf-8")
+
+        self.assertIn("await interaction.followup.send(embed=embed)\n", source)
+
 
 if __name__ == "__main__":
     unittest.main()
