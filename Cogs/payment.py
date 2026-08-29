@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import re
-
 import discord
 import requests
 from discord import app_commands
 from discord.ext import commands
 
+from Cogs.ltc_zpub import derive_ltc_address
 from Cogs.server_data import ensure_guild_files, payment_settings, set_payment
 from utils import is_allowed
 
 
 LTC_API = "https://litecoinspace.org/api"
-LTC_ADDRESS = re.compile(r"^(?:ltc1[ac-hj-np-z02-9]{20,87}|[LM3][a-km-zA-HJ-NP-Z1-9]{25,34})$")
+IAN_COLEMAN_BIP39_URL = "https://iancoleman.io/bip39/"
+IAN_COLEMAN_GITHUB_URL = "https://github.com/iancoleman/bip39"
 
 
 def ltc_balance(address: str) -> tuple[int, int]:
@@ -35,29 +35,55 @@ class PaymentCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="ltcウォレット設定", description="売上を受け取るLTCウォレットを設定します")
-    @app_commands.describe(address="送金先のLitecoinアドレス")
+    @app_commands.command(name="ltcウォレット設定", description="Ian Coleman BIP39から出力したzpubを設定します")
+    @app_commands.describe(zpub="Account Extended Public Key欄のzpub（秘密鍵やシードは入力禁止）")
     @is_allowed()
-    async def set_ltc_wallet(self, interaction: discord.Interaction, address: str):
+    async def set_ltc_wallet(self, interaction: discord.Interaction, zpub: str):
         if interaction.guild_id is None:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
-        address = address.strip()
-        if not LTC_ADDRESS.fullmatch(address):
-            return await interaction.response.send_message("正しいLitecoinアドレスを入力してください。", ephemeral=True)
+        zpub = zpub.strip()
+        try:
+            first_address = derive_ltc_address(zpub, 0)
+        except ValueError:
+            return await interaction.response.send_message(
+                "正しいzpubを入力してください。シードや秘密鍵は入力しないでください。", ephemeral=True
+            )
         ensure_guild_files(interaction.guild_id)
         set_payment(
             interaction.guild_id,
             interaction.user.id,
             "ltc",
             True,
-            ltc_wallet=address,
+            ltc_zpub=zpub,
+            ltc_address_index=0,
         )
         embed = discord.Embed(
             title="LTCウォレット設定完了",
-            description=f"入金先を `{address}` に設定しました。注文のLTCはこのアドレスへ直接送金されます。",
+            description=f"zpubを設定しました。最初の入金アドレスは `{first_address}` です。",
             color=discord.Color.blue(),
         )
+        embed.add_field(name="導出ツール", value=f"[Ian Coleman BIP39]({IAN_COLEMAN_BIP39_URL})", inline=False)
         embed.set_footer(text="シードフレーズ・秘密鍵はBOTへ送信しないでください。")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="ltc設定方法", description="zpubの取得方法と設定時の注意を表示します")
+    @is_allowed()
+    async def ltc_setup_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="LTC zpub設定方法",
+            description=(
+                f"[Ian Coleman BIP39]({IAN_COLEMAN_BIP39_URL}) でLitecoinのアカウントを開き、"
+                "`Account Extended Public Key` に表示された **zpubだけ** を "
+                "`/ltcウォレット設定` へ入力してください。"
+            ),
+            color=discord.Color.blue(),
+        )
+        embed.add_field(
+            name="重要",
+            value="シードフレーズ、xprv、zprv、秘密鍵は絶対にBOTや他人へ送信しないでください。",
+            inline=False,
+        )
+        embed.add_field(name="ソースコード", value=f"[GitHub]({IAN_COLEMAN_GITHUB_URL})", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="ltc残高", description="設定済みLTCウォレットの残高を確認します")
@@ -65,12 +91,16 @@ class PaymentCog(commands.Cog):
     async def show_ltc_balance(self, interaction: discord.Interaction):
         if interaction.guild_id is None:
             return await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
-        address = payment_settings(interaction.guild_id, interaction.user.id).get("ltc_wallet")
-        if not address:
+        settings = payment_settings(interaction.guild_id, interaction.user.id)
+        zpub = settings.get("ltc_zpub")
+        if not zpub:
             return await interaction.response.send_message("先にLTCウォレットを設定してください。", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         try:
-            confirmed, pending = ltc_balance(address)
+            addresses = [derive_ltc_address(zpub, index) for index in range(int(settings.get("ltc_address_index", 0)))]
+            balances = [ltc_balance(address) for address in addresses]
+            confirmed = sum(balance[0] for balance in balances)
+            pending = sum(balance[1] for balance in balances)
         except (requests.RequestException, ValueError):
             return await interaction.followup.send("Litecoin APIから残高を取得できませんでした。", ephemeral=True)
         embed = discord.Embed(title="LTC残高", color=discord.Color.blue())

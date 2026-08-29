@@ -11,13 +11,13 @@ import requests
 from discord import app_commands, ui
 from discord.ext import commands
 
+from Cogs.ltc_zpub import derive_ltc_address
 from Cogs.server_data import payment_settings, set_payment
 from utils import is_allowed
 
 
 LTC_API = "https://litecoinspace.org/api"
 LITOSHI = 100_000_000
-ACTIVE_WALLETS: set[str] = set()
 
 
 def order_embed(title: str, description: str, *, error: bool = False) -> discord.Embed:
@@ -40,14 +40,6 @@ def address_balance(address: str) -> tuple[int, int]:
     return confirmed, pending
 
 
-def order_receipts(order: dict, confirmed: int, pending: int) -> tuple[int, int]:
-    """Return confirmed/pending amounts received after this order started."""
-    initial_total = order["initial_confirmed"] + order["initial_pending"]
-    received = max(0, confirmed + pending - initial_total)
-    new_pending = min(received, max(0, pending - order["initial_pending"]))
-    return received - new_pending, new_pending
-
-
 class LTCOrderView(ui.View):
     def __init__(self, order: dict, required: int, success_callback=None):
         super().__init__(timeout=3600)
@@ -58,11 +50,10 @@ class LTCOrderView(ui.View):
         self.settle_lock = asyncio.Lock()
 
     async def on_timeout(self) -> None:
-        """Close an unpaid direct-to-wallet order after one hour."""
+        """Close the order after one hour without retaining a global lock."""
         if self.finished:
             return
         self.finished = True
-        ACTIVE_WALLETS.discard(self.order["address"])
 
     def allow_paid_attempt(self, user_id: int) -> bool:
         """Allow at most five balance checks per user in a rolling minute."""
@@ -80,6 +71,11 @@ class LTCOrderView(ui.View):
             return await interaction.response.send_message(
                 embed=order_embed("処理済み", "この注文はすでに処理されています。")
             )
+        if cancelled:
+            self.finished = True
+            for child in self.children:
+                child.disabled = True
+            return await interaction.response.send_message(embed=order_embed("注文キャンセル", "注文をキャンセルしました。"))
         await interaction.response.defer()
         await asyncio.sleep(10)
         try:
@@ -88,44 +84,19 @@ class LTCOrderView(ui.View):
             return await interaction.followup.send(
                 embed=order_embed("残高確認エラー", "残高APIを取得できませんでした。もう一度押してください。", error=True)
             )
-        confirmed, pending = order_receipts(self.order, confirmed, pending)
         received = confirmed + pending
-        if received == 0 and cancelled:
-            self.finished = True
-            ACTIVE_WALLETS.discard(self.order["address"])
-            return await interaction.followup.send(embed=order_embed("注文キャンセル", "注文をキャンセルしました。"))
-        if received < self.required and not cancelled:
+        if received < self.required:
             short = (self.required - received) / LITOSHI
             if confirmed < received:
-                await interaction.followup.send(
+                return await interaction.followup.send(
                     embed=order_embed(
                         "入金額不足・承認待ち",
                         f"必要額より少ない入金を確認しました。この入金はすでに受取先アドレスへ送られています。\n"
-                        f"不足額\n```text\n{short:.8f} LTC\n```",
+                        f"承認後にもう一度「送金完了」を押してください。\n不足額\n```text\n{short:.8f} LTC\n```",
                         error=True,
                     )
                 )
-                for _ in range(60):
-                    await asyncio.sleep(30)
-                    try:
-                        current_confirmed, current_pending = await asyncio.to_thread(
-                            address_balance, self.order["address"]
-                        )
-                        confirmed, pending = order_receipts(self.order, current_confirmed, current_pending)
-                    except requests.RequestException:
-                        continue
-                    if confirmed >= received:
-                        break
-                else:
-                    return await interaction.followup.send(
-                        embed=order_embed(
-                            "承認待ちタイムアウト",
-                            "入金承認後にもう一度「送金完了」を押してください。",
-                            error=True,
-                        )
-                    )
             self.finished = True
-            ACTIVE_WALLETS.discard(self.order["address"])
             for child in self.children:
                 child.disabled = True
             return await interaction.followup.send(
@@ -136,28 +107,11 @@ class LTCOrderView(ui.View):
                     error=True,
                 )
             )
-        target = received if cancelled else self.required
-        if confirmed < target:
-            await interaction.followup.send(
-                embed=order_embed("入金を確認しました", "未承認入金を確認しました。ネットワーク承認を待っています。")
+        if confirmed < self.required:
+            return await interaction.followup.send(
+                embed=order_embed("入金を確認しました", "未承認入金を確認しました。承認後にもう一度「送金完了」を押してください。")
             )
-            for _ in range(60):
-                await asyncio.sleep(30)
-                try:
-                    current_confirmed, current_pending = await asyncio.to_thread(address_balance, self.order["address"])
-                    confirmed, pending = order_receipts(self.order, current_confirmed, current_pending)
-                except requests.RequestException:
-                    continue
-                if confirmed >= target:
-                    break
-            else:
-                return await interaction.followup.send(
-                    embed=order_embed(
-                        "承認待ちタイムアウト", "承認後にもう一度「送金完了」を押してください。", error=True
-                    )
-                )
         self.finished = True
-        ACTIVE_WALLETS.discard(self.order["address"])
         for child in self.children:
             child.disabled = True
         await interaction.followup.send(embed=order_embed("決済が完了しました", "LTCの着金を確認しました。"))
@@ -180,36 +134,26 @@ class LTCOrderView(ui.View):
 
 
 async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amount_ltc: float, success_callback=None) -> bool:
-    # Checking the address and opening a DM can exceed Discord's three-second
+    # Deriving an address and opening a DM can exceed Discord's three-second
     # interaction response window, so acknowledge the button immediately.
     await interaction.response.defer(ephemeral=True)
     settings = payment_settings(interaction.guild_id, seller_id)
-    address = settings.get("ltc_wallet")
-    if not settings.get("ltc") or not address:
+    zpub = settings.get("ltc_zpub")
+    if not settings.get("ltc") or not zpub:
         await interaction.followup.send(
             embed=order_embed("LTC決済エラー", "LTC決済は現在利用できません。", error=True), ephemeral=True
         )
         return False
-    if address in ACTIVE_WALLETS:
-        await interaction.followup.send(
-            embed=order_embed("LTC決済待機中", "このLTCウォレットでは別の注文を処理中です。完了後にやり直してください。"),
-            ephemeral=True,
-        )
-        return False
-    ACTIVE_WALLETS.add(address)
+    address_index = int(settings.get("ltc_address_index", 0))
     try:
-        initial_confirmed, initial_pending = await asyncio.to_thread(address_balance, address)
-    except requests.RequestException:
-        ACTIVE_WALLETS.discard(address)
+        address = derive_ltc_address(zpub, address_index)
+    except (TypeError, ValueError):
         await interaction.followup.send(
-            embed=order_embed("LTC決済エラー", "入金先の残高を確認できませんでした。", error=True), ephemeral=True
+            embed=order_embed("LTC決済エラー", "登録済みzpubから入金アドレスを作成できません。", error=True), ephemeral=True
         )
         return False
-    order = {
-        "address": address,
-        "initial_confirmed": initial_confirmed,
-        "initial_pending": initial_pending,
-    }
+    set_payment(interaction.guild_id, seller_id, "ltc", True, ltc_zpub=zpub, ltc_address_index=address_index + 1)
+    order = {"address": address, "address_index": address_index}
     required = round(amount_ltc * LITOSHI)
     view = LTCOrderView(order, required, success_callback)
     embed = order_embed("Litecoin決済", "下記のアドレスへ、表示された金額を正確に送金してください。")
@@ -225,7 +169,6 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
     try:
         await interaction.user.send(embed=embed, view=view)
     except (discord.Forbidden, discord.HTTPException):
-        ACTIVE_WALLETS.discard(address)
         await interaction.followup.send(
             embed=order_embed(
                 "DMを送信できませんでした",
@@ -248,8 +191,8 @@ class LTCCog(commands.Cog):
     @is_allowed()
     async def enable(self, interaction: discord.Interaction):
         settings = payment_settings(interaction.guild_id, interaction.user.id)
-        if not settings.get("ltc_wallet"):
-            return await interaction.response.send_message("先に `/ltcウォレット設定` で入金先を設定してください。", ephemeral=True)
+        if not settings.get("ltc_zpub"):
+            return await interaction.response.send_message("先に `/ltcウォレット設定` でzpubを設定してください。", ephemeral=True)
         set_payment(interaction.guild_id, interaction.user.id, "ltc", True)
         await interaction.response.send_message("LTC決済を有効化しました。", ephemeral=True)
 

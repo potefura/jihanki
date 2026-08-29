@@ -1,4 +1,4 @@
-"""Regression checks for direct-to-wallet LTC checkout."""
+"""Regression checks for watch-only LTC checkout."""
 
 from pathlib import Path
 import unittest
@@ -11,23 +11,21 @@ REQUIREMENTS = ROOT / "requirements.txt"
 
 
 class LTCCogSyntaxTests(unittest.TestCase):
-    def test_checkout_uses_the_configured_wallet_directly(self):
+    def test_checkout_uses_a_unique_zpub_address_without_global_locks(self):
         checkout = LTC_COG.read_text(encoding="utf-8")
         payment = PAYMENT_COG.read_text(encoding="utf-8")
-        self.assertIn('address = settings.get("ltc_wallet")', checkout)
-        self.assertIn('"initial_confirmed": initial_confirmed', checkout)
-        self.assertIn("order_receipts(self.order, confirmed, pending)", checkout)
-        self.assertIn("if address in ACTIVE_WALLETS", checkout)
-        self.assertIn('ACTIVE_WALLETS.discard(self.order["address"])', checkout)
-        self.assertIn("ltc_wallet=address", payment)
+        self.assertIn("derive_ltc_address(zpub, address_index)", checkout)
+        self.assertIn("ltc_address_index=address_index + 1", checkout)
+        self.assertIn("ltc_zpub=zpub", payment)
+        self.assertNotIn("ACTIVE_WALLETS", checkout)
+        self.assertNotIn("order_receipts", checkout)
         self.assertNotIn("bitcoinlib", checkout + payment + REQUIREMENTS.read_text(encoding="utf-8"))
         self.assertNotIn("sweep_order", checkout)
 
-    def test_payment_setup_only_accepts_a_public_ltc_address(self):
+    def test_payment_setup_only_accepts_a_public_zpub(self):
         payment = PAYMENT_COG.read_text(encoding="utf-8")
 
-        self.assertIn("LTC_ADDRESS.fullmatch(address)", payment)
-        self.assertIn("注文のLTCはこのアドレスへ直接送金されます", payment)
+        self.assertIn("derive_ltc_address(zpub, 0)", payment)
         self.assertIn("シードフレーズ・秘密鍵はBOTへ送信しないでください", payment)
 
     def test_dm_statuses_use_embeds_and_copyable_amount(self):
@@ -45,9 +43,18 @@ class LTCCogSyntaxTests(unittest.TestCase):
         self.assertIn("timedelta(hours=1)", source)
         self.assertIn("len(attempts) >= 5", source)
 
+    def test_cancel_is_immediate_and_confirmation_does_not_poll(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+        settle = source[source.index("async def _settle"):source.index('@ui.button(label="送金完了"')]
+
+        self.assertIn("if cancelled:", settle)
+        self.assertLess(settle.index("if cancelled:"), settle.index("address_balance"))
+        self.assertNotIn("for _ in range", settle)
+        self.assertNotIn("asyncio.sleep(30)", settle)
+
     def test_underpayment_needs_no_second_transfer(self):
         source = LTC_COG.read_text(encoding="utf-8")
-        underpayment = source[source.index("if received < self.required"):source.index("target = received")]
+        underpayment = source[source.index("if received < self.required"):source.index("if confirmed < self.required")]
 
         self.assertIn("入金先への着金は確認済みです", underpayment)
         self.assertNotIn("sweep", underpayment)
