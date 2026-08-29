@@ -34,6 +34,20 @@ class LTCCogSyntaxTests(unittest.TestCase):
         self.assertNotIn('"mnemonic":', source)
         self.assertIn("os.chmod(database_file, 0o600)", source)
 
+    def test_checkout_acknowledges_before_creating_the_wallet(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        defer_position = source.index("await interaction.response.defer()", source.index("async def start_ltc_order"))
+        wallet_position = source.index("create_order_wallet", defer_position)
+        self.assertLess(defer_position, wallet_position)
+
+    def test_dm_statuses_use_embeds_and_copyable_amount(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        self.assertIn('name="送金額（タップしてコピー）"', source)
+        self.assertIn('order_embed("決済が完了しました"', source)
+        self.assertNotIn('interaction.response.send_message("DMを受信できるようにしてからやり直してください。"', source)
+
 
 if __name__ == "__main__":
     unittest.main()
