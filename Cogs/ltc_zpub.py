@@ -24,12 +24,17 @@ def _base58check(value: str) -> bytes:
     number = 0
     for character in value:
         if character not in ALPHABET:
-            raise ValueError("zpubの形式が正しくありません。")
+            raise ValueError("公開鍵の形式が正しくありません。")
         number = number * 58 + ALPHABET.index(character)
-    byte_length = max(1, (number.bit_length() + 7) // 8)
-    raw = b"\0" * (len(value) - len(value.lstrip("1"))) + number.to_bytes(byte_length, "big")
-    if len(raw) != 82 or hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]:
-        raise ValueError("zpubのチェックサムが正しくありません。")
+    try:
+        # A serialized BIP32 extended key is always 78 bytes plus a
+        # four-byte Base58Check checksum. Supported versions are non-zero,
+        # so an accepted key has no Base58 leading-zero padding to restore.
+        raw = number.to_bytes(82, "big")
+    except OverflowError as error:
+        raise ValueError("公開鍵の長さが正しくありません。") from error
+    if hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]:
+        raise ValueError("公開鍵のチェックサムが正しくありません。")
     return raw[:-4]
 
 

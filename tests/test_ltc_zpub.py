@@ -47,6 +47,10 @@ class LTCZpubTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             derive_ltc_address(base58check(payload), 0)
 
+    def test_rejects_base58_values_larger_than_82_bytes(self):
+        with self.assertRaisesRegex(ValueError, "公開鍵の長さが正しくありません"):
+            derive_ltc_address("z" * 200, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
