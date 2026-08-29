@@ -1189,8 +1189,9 @@ class VendingMachineCog(commands.Cog):
             # LTC confirmation buttons are pressed in DM, where interaction.guild
             # is None. Retain the guild in which checkout originally began.
             purchase_guild = purchase_guild or interaction.guild
+            server_interaction = interaction.guild is not None
             if not already_deferred:
-                await interaction.response.defer()
+                await interaction.response.defer(ephemeral=server_interaction)
             
             try:
                 vending_data = load_json(VENDING_DATA_FILE)
@@ -1360,7 +1361,7 @@ class VendingMachineCog(commands.Cog):
                 )
                 embed.add_field(name="購入した商品", value=purchased_content, inline=False)
                 embed.set_footer(text="Developer @potefura")
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=embed, ephemeral=server_interaction)
                 
                 vending_data = load_json(VENDING_DATA_FILE)
                 if self.vending_machine_id in vending_data and isinstance(vending_data[self.vending_machine_id], dict):

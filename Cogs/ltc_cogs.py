@@ -5,7 +5,10 @@ import asyncio
 import json
 import os
 import re
+import time
 import uuid
+from collections import defaultdict, deque
+from datetime import timedelta
 from pathlib import Path
 
 import discord
@@ -98,10 +101,34 @@ def sweep_order(order: dict, recipient: str, amount: int) -> str:
 
 class LTCOrderView(ui.View):
     def __init__(self, order: dict, required: int, seller_wallet: str, success_callback=None):
-        super().__init__(timeout=1800)
+        super().__init__(timeout=3600)
         self.order, self.required, self.seller_wallet = order, required, seller_wallet
         self.finished = False
         self.success_callback = success_callback
+        self.paid_attempts: dict[int, deque[float]] = defaultdict(deque)
+
+    async def on_timeout(self) -> None:
+        """Discard an unpaid temporary wallet when the one-hour order expires."""
+        if self.finished:
+            return
+        try:
+            confirmed, pending = await asyncio.to_thread(address_balance, self.order["address"])
+        except requests.RequestException:
+            return
+        if confirmed + pending == 0:
+            self.finished = True
+            await asyncio.to_thread(destroy_order_wallet, self.order)
+
+    def allow_paid_attempt(self, user_id: int) -> bool:
+        """Allow at most five balance checks per user in a rolling minute."""
+        now = time.monotonic()
+        attempts = self.paid_attempts[user_id]
+        while attempts and now - attempts[0] >= 60:
+            attempts.popleft()
+        if len(attempts) >= 5:
+            return False
+        attempts.append(now)
+        return True
 
     async def _settle(self, interaction: discord.Interaction, cancelled: bool = False):
         if self.finished:
@@ -120,7 +147,7 @@ class LTCOrderView(ui.View):
         if received == 0 and cancelled:
             self.finished = True
             await asyncio.to_thread(destroy_order_wallet, self.order)
-            return await interaction.followup.send("注文をキャンセルしました。")
+            return await interaction.followup.send(embed=order_embed("注文キャンセル", "注文をキャンセルしました。"))
         if received < self.required and not cancelled:
             short = (self.required - received) / LITOSHI
             return await interaction.followup.send(
@@ -162,6 +189,10 @@ class LTCOrderView(ui.View):
 
     @ui.button(label="送金完了", style=discord.ButtonStyle.success)
     async def paid(self, interaction: discord.Interaction, button: ui.Button):
+        if not self.allow_paid_attempt(interaction.user.id):
+            return await interaction.response.send_message(
+                embed=order_embed("レート制限", "「送金完了」は1分間に5回まで押せます。少し待ってからやり直してください。", error=True)
+            )
         await self._settle(interaction)
 
     @ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
@@ -172,30 +203,50 @@ class LTCOrderView(ui.View):
 async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amount_ltc: float, success_callback=None) -> bool:
     # Wallet generation and opening a DM can exceed Discord's three-second
     # interaction response window, so acknowledge the button immediately.
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     settings = payment_settings(interaction.guild_id, seller_id)
     recipient = settings.get("ltc_wallet")
     if not settings.get("ltc") or not recipient:
-        await interaction.followup.send(embed=order_embed("LTC決済エラー", "販売者のLTC決済は現在利用できません。", error=True))
+        await interaction.followup.send(
+            embed=order_embed("LTC決済エラー", "販売者のLTC決済は現在利用できません。", error=True), ephemeral=True
+        )
         return False
     order_id = uuid.uuid4().hex
     try:
         order = await asyncio.to_thread(create_order_wallet, interaction.guild_id, order_id)
     except (ImportError, ModuleNotFoundError):
-        await interaction.followup.send(embed=order_embed("LTC決済エラー", "bitcoinlibがインストールされていません。", error=True))
+        await interaction.followup.send(
+            embed=order_embed("LTC決済エラー", "bitcoinlibがインストールされていません。", error=True), ephemeral=True
+        )
         return False
     required = round(amount_ltc * LITOSHI)
     view = LTCOrderView(order, required, recipient, success_callback)
     embed = order_embed("Litecoin決済", "下記のアドレスへ、表示された金額を正確に送金してください。")
+    expires_at = discord.utils.utcnow() + timedelta(hours=1)
     embed.add_field(name="送金先アドレス（タップしてコピー）", value=f"```text\n{order['address']}\n```", inline=False)
     embed.add_field(name="送金額（タップしてコピー）", value=f"```text\n{amount_ltc:.8f}\n```", inline=False)
+    embed.add_field(
+        name="支払期限",
+        value=f"<t:{int(expires_at.timestamp())}:F>（<t:{int(expires_at.timestamp())}:R>）",
+        inline=False,
+    )
+    embed.set_footer(text="未入金の注文は、キャンセル操作がなくても1時間後に自動終了します。")
     try:
         await interaction.user.send(embed=embed, view=view)
     except (discord.Forbidden, discord.HTTPException):
         await asyncio.to_thread(destroy_order_wallet, order)
-        await interaction.response.send_message("DMを受信できるようにしてからやり直してください。", ephemeral=True)
+        await interaction.followup.send(
+            embed=order_embed(
+                "DMを送信できませんでした",
+                "サーバーメンバーからのDMを受信できるようにしてから、もう一度やり直してください。",
+                error=True,
+            ),
+            ephemeral=True,
+        )
         return False
-    await interaction.followup.send(embed=order_embed("DMを送信しました", "決済用ウォレットをDMに送りました。"))
+    await interaction.followup.send(
+        embed=order_embed("DMを送信しました", "決済用ウォレットをDMに送りました。"), ephemeral=True
+    )
     return True
 
 
