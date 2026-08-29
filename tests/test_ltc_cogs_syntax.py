@@ -57,13 +57,27 @@ class LTCCogSyntaxTests(unittest.TestCase):
         self.assertIn("len(attempts) >= 5", source)
         self.assertIn('"DMを送信しました", "決済用ウォレットをDMに送りました。"), ephemeral=True', source)
 
-    def test_underpayment_is_forwarded_to_the_seller(self):
+    def test_underpayment_is_forwarded_to_the_recipient(self):
         source = LTC_COG.read_text(encoding="utf-8")
 
         underpayment = source[source.index("if received < self.required"):source.index("target = received")]
         self.assertIn("sweep_order", underpayment)
-        self.assertIn("受領済みLTCは販売者へ送金しました", underpayment)
+        self.assertIn("受領済みLTCは受取先へ送金しました", underpayment)
         self.assertIn("confirmed < received", underpayment)
+
+    def test_customer_messages_do_not_call_the_recipient_a_seller(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        self.assertIn("受領済みLTCは受取先へ送金しました", source)
+
+    def test_sweep_imports_litecoinspace_utxos_and_handles_wallet_errors(self):
+        source = LTC_COG.read_text(encoding="utf-8")
+
+        self.assertIn('f"{LTC_API}/address/{address}/utxo"', source)
+        self.assertIn('f"{LTC_API}/tx/{txid}"', source)
+        self.assertIn('wallet.utxos_update(networks="litecoin", utxos=utxos)', source)
+        self.assertIn("ValueError, WalletError", source)
+        self.assertNotIn("wallet.scan()", source)
 
 
 if __name__ == "__main__":

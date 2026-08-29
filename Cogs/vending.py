@@ -1213,7 +1213,7 @@ class VendingMachineCog(commands.Cog):
 
                         if not owner_credentials:
                             return await interaction.followup.send(
-                                "販売者のPayPayアカウントが設定されていません。\n販売者にお問い合わせください。",
+                                "PayPay決済は現在利用できません。別の決済方法をお試しください。",
                                 ephemeral=True
                             )
                         
@@ -1229,7 +1229,7 @@ class VendingMachineCog(commands.Cog):
                                 if interaction.guild_id is not None:
                                     set_payment(interaction.guild_id, vm.get("owner_id", ""), "paypay", False)
                                 return await interaction.followup.send(
-                                    "販売者のログインに失敗しました。販売者にお問い合わせください。",
+                                    "PayPay決済のログインに失敗しました。別の決済方法をお試しください。",
                                     ephemeral=True
                                 )
                             
@@ -1301,7 +1301,7 @@ class VendingMachineCog(commands.Cog):
                         kyash_data = load_kyash_data()
                         owner_kyash_info = kyash_data.get(vm.get("kyash_id", ""))
                         if not owner_kyash_info:
-                            return await interaction.followup.send("販売者のKyashアカウントが設定されていません。", ephemeral=True)
+                            return await interaction.followup.send("Kyash決済は現在利用できません。", ephemeral=True)
                         
                         try:
                             kyash = Kyash(
@@ -1668,7 +1668,7 @@ class VendingMachineCog(commands.Cog):
                 methods = [method for method in ("paypay", "kyash", "ltc") if settings.get(method)]
                 if not methods:
                     return await interaction.response.send_message(
-                        "現在利用できる決済方法はありません。販売者にお問い合わせください。", ephemeral=True
+                        "現在利用できる決済方法はありません。", ephemeral=True
                     )
                 view = VendingMachineCog.PaymentMethodView(self.vending_machine_id, self.bot, methods)
                 await interaction.response.send_message(

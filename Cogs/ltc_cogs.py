@@ -13,7 +13,7 @@ from pathlib import Path
 
 import discord
 import requests
-from bitcoinlib.wallets import Wallet as BitcoinWallet, wallet_delete_if_exists
+from bitcoinlib.wallets import Wallet as BitcoinWallet, WalletError, wallet_delete_if_exists
 from discord import app_commands, ui
 from discord.ext import commands
 
@@ -82,14 +82,49 @@ def destroy_order_wallet(order: dict) -> None:
             Path(filename).unlink(missing_ok=True)
 
 
+def address_utxos(address: str) -> list[dict]:
+    """Load confirmed UTXOs from LitecoinSpace in bitcoinlib's import format."""
+    response = requests.get(f"{LTC_API}/address/{address}/utxo", headers={"accept": "application/json"}, timeout=10)
+    response.raise_for_status()
+    result = []
+    for item in response.json():
+        if not item.get("status", {}).get("confirmed"):
+            continue
+        txid = item["txid"]
+        output_n = int(item["vout"])
+        transaction_response = requests.get(
+            f"{LTC_API}/tx/{txid}", headers={"accept": "application/json"}, timeout=10
+        )
+        transaction_response.raise_for_status()
+        output = transaction_response.json()["vout"][output_n]
+        result.append(
+            {
+                "address": address,
+                "script": output["scriptpubkey"],
+                "confirmations": 1,
+                "output_n": output_n,
+                "txid": txid,
+                "value": int(item["value"]),
+            }
+        )
+    return result
+
+
 def sweep_order(order: dict, recipient: str, amount: int) -> str:
     """Sweep the temporary wallet to the seller, then destroy it."""
     wallet = BitcoinWallet(order["wallet_name"], db_uri=order["database"])
-    wallet.scan()
-    fee = max(2_000, int(amount * 0.001))
-    if amount <= fee:
+    # bitcoinlib's default Litecoin providers can lag behind LitecoinSpace,
+    # although the balance API already sees the payment. Import the exact
+    # confirmed outputs used by the balance check before creating a transfer.
+    utxos = address_utxos(order["address"])
+    if not utxos:
+        raise WalletError("確認済みの未使用出力がまだ見つかりません。")
+    wallet.utxos_update(networks="litecoin", utxos=utxos)
+    spendable = sum(utxo["value"] for utxo in utxos)
+    fee = max(2_000, int(spendable * 0.001))
+    if spendable <= fee:
         raise ValueError("送金額がネットワーク手数料以下です。")
-    transaction = wallet.send_to(recipient, amount - fee, fee=fee, broadcast=False)
+    transaction = wallet.send_to(recipient, spendable - fee, fee=fee, broadcast=False)
     response = requests.post(
         f"{LTC_API}/tx", data=transaction.raw_hex(), headers={"Content-Type": "text/plain"}, timeout=15
     )
@@ -155,7 +190,7 @@ class LTCOrderView(ui.View):
                 await interaction.followup.send(
                     embed=order_embed(
                         "入金額不足・承認待ち",
-                        f"必要額より少ない入金を確認しました。承認後、保留になります。\n"
+                        f"必要額より少ない入金を確認しました。承認後、受領済みのLTCを受取先へ送金します。\n"
                         f"不足額\n```text\n{short:.8f} LTC\n```",
                         error=True,
                     )
@@ -172,17 +207,17 @@ class LTCOrderView(ui.View):
                     return await interaction.followup.send(
                         embed=order_embed(
                             "承認待ちタイムアウト",
-                            "入金承認後にもう一度「送金完了」を押してください。",
+                            "入金承認後にもう一度「送金完了」を押してください。受領済みLTCは受取先へ送金されます。",
                             error=True,
                         )
                     )
             try:
                 txid = await asyncio.to_thread(sweep_order, self.order, self.seller_wallet, confirmed)
-            except (requests.RequestException, ValueError) as error:
+            except (requests.RequestException, ValueError, WalletError) as error:
                 return await interaction.followup.send(
                     embed=order_embed(
                         "不足入金の送金エラー",
-                        f"受領済みLTCを販売者へ送金できませんでした。もう一度押してください。\n```text\n{error}\n```",
+                        f"受領済みLTCを受取先へ送金できませんでした。もう一度押してください。\n```text\n{error}\n```",
                         error=True,
                     )
                 )
@@ -192,7 +227,7 @@ class LTCOrderView(ui.View):
             return await interaction.followup.send(
                 embed=order_embed(
                     "入金額不足",
-                    f"決済は完了していません。\n"
+                    f"決済は完了していません。受領済みLTCは受取先へ送金しました。\n"
                     f"不足額\n```text\n{short:.8f} LTC\n```\n"
                     f"トランザクションID\n```text\n{txid}\n```",
                     error=True,
@@ -219,9 +254,9 @@ class LTCOrderView(ui.View):
                 )
         try:
             txid = await asyncio.to_thread(sweep_order, self.order, self.seller_wallet, confirmed)
-        except (requests.RequestException, ValueError) as error:
+        except (requests.RequestException, ValueError, WalletError) as error:
             return await interaction.followup.send(
-                embed=order_embed("決済処理エラー", f"送金に失敗しました。\n```text\n{error}\n```", error=True)
+                embed=order_embed("決済処理エラー", f"受取先ウォレットへの送金に失敗しました。\n```text\n{error}\n```", error=True)
             )
         self.finished = True
         for child in self.children:
@@ -263,7 +298,7 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
         order = await asyncio.to_thread(create_order_wallet, interaction.guild_id, order_id)
     except (ImportError, ModuleNotFoundError):
         await interaction.followup.send(
-            embed=order_embed("LTC決済エラー", "インストールされていません。", error=True), ephemeral=True
+            embed=order_embed("LTC決済エラー", "bitcoinlibがインストールされていません。", error=True), ephemeral=True
         )
         return False
     required = round(amount_ltc * LITOSHI)
