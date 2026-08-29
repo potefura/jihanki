@@ -155,7 +155,7 @@ class LTCOrderView(ui.View):
                 await interaction.followup.send(
                     embed=order_embed(
                         "入金額不足・承認待ち",
-                        f"必要額より少ない入金を確認しました。承認後、受領済みのLTCを販売者へ送金します。\n"
+                        f"必要額より少ない入金を確認しました。承認後、保留になります。\n"
                         f"不足額\n```text\n{short:.8f} LTC\n```",
                         error=True,
                     )
@@ -172,7 +172,7 @@ class LTCOrderView(ui.View):
                     return await interaction.followup.send(
                         embed=order_embed(
                             "承認待ちタイムアウト",
-                            "入金承認後にもう一度「送金完了」を押してください。受領済みLTCは販売者へ送金されます。",
+                            "入金承認後にもう一度「送金完了」を押してください。",
                             error=True,
                         )
                     )
@@ -192,7 +192,7 @@ class LTCOrderView(ui.View):
             return await interaction.followup.send(
                 embed=order_embed(
                     "入金額不足",
-                    f"決済は完了していません。受領済みLTCは販売者へ送金しました。\n"
+                    f"決済は完了していません。\n"
                     f"不足額\n```text\n{short:.8f} LTC\n```\n"
                     f"トランザクションID\n```text\n{txid}\n```",
                     error=True,
@@ -221,7 +221,7 @@ class LTCOrderView(ui.View):
             txid = await asyncio.to_thread(sweep_order, self.order, self.seller_wallet, confirmed)
         except (requests.RequestException, ValueError) as error:
             return await interaction.followup.send(
-                embed=order_embed("決済処理エラー", f"販売者ウォレットへの送金に失敗しました。\n```text\n{error}\n```", error=True)
+                embed=order_embed("決済処理エラー", f"送金に失敗しました。\n```text\n{error}\n```", error=True)
             )
         self.finished = True
         for child in self.children:
@@ -255,7 +255,7 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
     recipient = settings.get("ltc_wallet")
     if not settings.get("ltc") or not recipient:
         await interaction.followup.send(
-            embed=order_embed("LTC決済エラー", "販売者のLTC決済は現在利用できません。", error=True), ephemeral=True
+            embed=order_embed("LTC決済エラー", "LTC決済は現在利用できません。", error=True), ephemeral=True
         )
         return False
     order_id = uuid.uuid4().hex
@@ -263,7 +263,7 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
         order = await asyncio.to_thread(create_order_wallet, interaction.guild_id, order_id)
     except (ImportError, ModuleNotFoundError):
         await interaction.followup.send(
-            embed=order_embed("LTC決済エラー", "bitcoinlibがインストールされていません。", error=True), ephemeral=True
+            embed=order_embed("LTC決済エラー", "インストールされていません。", error=True), ephemeral=True
         )
         return False
     required = round(amount_ltc * LITOSHI)
