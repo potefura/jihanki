@@ -149,7 +149,7 @@ async def start_ltc_order(interaction: discord.Interaction, seller_id: str, amou
         address = derive_ltc_address(zpub, address_index)
     except (TypeError, ValueError):
         await interaction.followup.send(
-            embed=order_embed("LTC決済エラー", "登録済みzpubから入金アドレスを作成できません。", error=True), ephemeral=True
+            embed=order_embed("LTC決済エラー", "登録済み拡張公開鍵から入金アドレスを作成できません。", error=True), ephemeral=True
         )
         return False
     set_payment(interaction.guild_id, seller_id, "ltc", True, ltc_zpub=zpub, ltc_address_index=address_index + 1)
@@ -192,7 +192,7 @@ class LTCCog(commands.Cog):
     async def enable(self, interaction: discord.Interaction):
         settings = payment_settings(interaction.guild_id, interaction.user.id)
         if not settings.get("ltc_zpub"):
-            return await interaction.response.send_message("先に `/ltcウォレット設定` でzpubを設定してください。", ephemeral=True)
+            return await interaction.response.send_message("先に `/ltcウォレット設定` で拡張公開鍵を設定してください。", ephemeral=True)
         set_payment(interaction.guild_id, interaction.user.id, "ltc", True)
         await interaction.response.send_message("LTC決済を有効化しました。", ephemeral=True)
 

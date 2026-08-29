@@ -12,6 +12,10 @@ G = (
     0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
 )
 ZPUB_VERSION = bytes.fromhex("04b24746")
+XPUB_VERSION = bytes.fromhex("0488b21e")
+LPUB_VERSION = bytes.fromhex("019da462")
+MPUB_VERSION = bytes.fromhex("01b26ef6")
+VALID_VERSIONS = {ZPUB_VERSION, XPUB_VERSION, LPUB_VERSION, MPUB_VERSION}
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 
@@ -112,11 +116,11 @@ def _bech32(program: bytes) -> str:
     return "ltc1" + "".join(BECH32[value] for value in data + checksum)
 
 
-def derive_ltc_address(zpub: str, index: int) -> str:
-    """Derive external-chain address ``m/.../0/index`` from an account zpub."""
-    payload = _base58check(zpub.strip())
-    if payload[:4] != ZPUB_VERSION or payload[45] not in (2, 3) or index < 0 or index >= 2**31:
-        raise ValueError("Litecoin用zpubの形式が正しくありません。")
+def derive_ltc_address(extended_public_key: str, index: int) -> str:
+    """Derive ``m/.../0/index`` from a supported account extended public key."""
+    payload = _base58check(extended_public_key.strip())
+    if payload[:4] not in VALID_VERSIONS or payload[45] not in (2, 3) or index < 0 or index >= 2**31:
+        raise ValueError("Litecoin用zpub/xpub/Lpub/Mpubの形式が正しくありません。")
     public_key, chain_code = payload[45:78], payload[13:45]
     public_key, chain_code = _child(public_key, chain_code, 0)
     public_key, _ = _child(public_key, chain_code, index)

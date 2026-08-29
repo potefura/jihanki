@@ -35,8 +35,8 @@ class PaymentCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="ltcウォレット設定", description="Ian Coleman BIP39から出力したzpubを設定します")
-    @app_commands.describe(zpub="Account Extended Public Key欄のzpub（秘密鍵やシードは入力禁止）")
+    @app_commands.command(name="ltcウォレット設定", description="LTCウォレットの拡張公開鍵を設定します")
+    @app_commands.describe(zpub="zpub/xpub/Lpub/Mpub（秘密鍵やシードは入力禁止）")
     @is_allowed()
     async def set_ltc_wallet(self, interaction: discord.Interaction, zpub: str):
         if interaction.guild_id is None:
@@ -46,7 +46,7 @@ class PaymentCog(commands.Cog):
             first_address = derive_ltc_address(zpub, 0)
         except ValueError:
             return await interaction.response.send_message(
-                "正しいzpubを入力してください。シードや秘密鍵は入力しないでください。", ephemeral=True
+                "正しいzpub/xpub/Lpub/Mpubを入力してください。シードや秘密鍵は入力しないでください。", ephemeral=True
             )
         ensure_guild_files(interaction.guild_id)
         set_payment(
@@ -59,21 +59,21 @@ class PaymentCog(commands.Cog):
         )
         embed = discord.Embed(
             title="LTCウォレット設定完了",
-            description=f"zpubを設定しました。最初の入金アドレスは `{first_address}` です。",
+            description=f"拡張公開鍵を設定しました。最初の入金アドレスは `{first_address}` です。",
             color=discord.Color.blue(),
         )
         embed.add_field(name="導出ツール", value=f"[Ian Coleman BIP39]({IAN_COLEMAN_BIP39_URL})", inline=False)
         embed.set_footer(text="シードフレーズ・秘密鍵はBOTへ送信しないでください。")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="ltc設定方法", description="zpubの取得方法と設定時の注意を表示します")
+    @app_commands.command(name="ltc設定方法", description="拡張公開鍵の取得方法と設定時の注意を表示します")
     @is_allowed()
     async def ltc_setup_help(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="LTC zpub設定方法",
+            title="LTC拡張公開鍵の設定方法",
             description=(
                 f"[Ian Coleman BIP39]({IAN_COLEMAN_BIP39_URL}) でLitecoinのアカウントを開き、"
-                "`Account Extended Public Key` に表示された **zpubだけ** を "
+                "`Account Extended Public Key` に表示された **zpub/xpub/Lpub/Mpub** を "
                 "`/ltcウォレット設定` へ入力してください。"
             ),
             color=discord.Color.blue(),

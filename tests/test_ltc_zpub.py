@@ -3,7 +3,7 @@
 import hashlib
 import unittest
 
-from Cogs.ltc_zpub import ALPHABET, G, ZPUB_VERSION, derive_ltc_address
+from Cogs.ltc_zpub import ALPHABET, G, VALID_VERSIONS, ZPUB_VERSION, derive_ltc_address
 
 
 def base58check(payload: bytes) -> str:
@@ -31,6 +31,21 @@ class LTCZpubTests(unittest.TestCase):
     def test_rejects_invalid_zpub(self):
         with self.assertRaises(ValueError):
             derive_ltc_address("zpub-invalid", 0)
+
+    def test_accepts_common_extended_public_key_versions(self):
+        for version in VALID_VERSIONS:
+            with self.subTest(version=version.hex()):
+                payload = version + b"\x03" + b"\0" * 4 + b"\0" * 4 + b"\x01" * 32 + bytes(
+                    [2 | (G[1] & 1)]
+                ) + G[0].to_bytes(32, "big")
+                self.assertTrue(derive_ltc_address(base58check(payload), 0).startswith("ltc1q"))
+
+    def test_rejects_unknown_extended_public_key_version(self):
+        payload = b"\x01\x02\x03\x04" + b"\x03" + b"\0" * 4 + b"\0" * 4 + b"\x01" * 32 + bytes(
+            [2 | (G[1] & 1)]
+        ) + G[0].to_bytes(32, "big")
+        with self.assertRaises(ValueError):
+            derive_ltc_address(base58check(payload), 0)
 
 
 if __name__ == "__main__":
