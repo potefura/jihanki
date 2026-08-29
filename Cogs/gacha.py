@@ -57,6 +57,27 @@ async def public_gacha_choices(interaction: discord.Interaction, current: str):
     ][:25]
 
 
+class GachaDrawButton(discord.ui.Button):
+    def __init__(self, cog: "GachaCog", gacha_id: str):
+        super().__init__(
+            label="ガチャを引く",
+            emoji="🎰",
+            style=discord.ButtonStyle.success,
+            custom_id=f"gacha_draw_{gacha_id}",
+        )
+        self.cog = cog
+        self.gacha_id = gacha_id
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.draw_gacha(interaction, self.gacha_id)
+
+
+class GachaPanelView(discord.ui.View):
+    def __init__(self, cog: "GachaCog", gacha_id: str):
+        super().__init__(timeout=None)
+        self.add_item(GachaDrawButton(cog, gacha_id))
+
+
 class GachaCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -188,15 +209,20 @@ class GachaCog(commands.Cog):
     @app_commands.command(name="ガチャを引く", description="残高を使ってガチャを1回引きます")
     @app_commands.autocomplete(gacha_id=public_gacha_choices)
     async def draw(self, interaction: discord.Interaction, gacha_id: str):
+        await self.draw_gacha(interaction, gacha_id)
+
+    async def draw_gacha(self, interaction: discord.Interaction, gacha_id: str):
+        """Draw from a slash command or a public panel button."""
+        await interaction.response.defer(ephemeral=True)
         data = load_data(interaction.guild_id, "gacha.json", {})
         item = data.get(gacha_id)
         balances = load_data(interaction.guild_id, "balance.json", {})
         user_id = str(interaction.user.id)
         products = _products(item) if item else []
         if not item or not products:
-            return await interaction.response.send_message("ガチャがないか、商品が登録されていません。", ephemeral=True)
+            return await interaction.followup.send("ガチャがないか、商品が登録されていません。", ephemeral=True)
         if balances.get(user_id, 0) < item["price"]:
-            return await interaction.response.send_message("残高が不足しています。", ephemeral=True)
+            return await interaction.followup.send("残高が不足しています。", ephemeral=True)
 
         product = random.choice(products)
         result = "ハズレ" if product.get("is_loser") else "当たり"
@@ -212,17 +238,17 @@ class GachaCog(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             dm_delivered = False
 
-        balances[user_id] -= item["price"]
-        item["uses"] = item.get("uses", 0) + 1
         if dm_delivered:
+            balances[user_id] -= item["price"]
+            item["uses"] = item.get("uses", 0) + 1
             product["received_count"] = product.get("received_count", 0) + 1
-        save_guild_json(interaction.guild_id, "balance.json", balances)
-        save_guild_json(interaction.guild_id, "gacha.json", data)
+            save_guild_json(interaction.guild_id, "balance.json", balances)
+            save_guild_json(interaction.guild_id, "gacha.json", data)
 
         if dm_delivered:
-            await interaction.response.send_message(f"結果をDMに送りました。商品名: **{product['name']}**", ephemeral=True)
+            await interaction.followup.send(f"結果をDMに送りました。商品名: **{product['name']}**", ephemeral=True)
         else:
-            await interaction.response.send_message("DMに送れませんでした。サーバーからのDMを許可してください。", ephemeral=True)
+            await interaction.followup.send("DMに送れませんでした。サーバーからのDMを許可してください。", ephemeral=True)
 
         channel = interaction.guild.get_channel(item.get("log_channel_id"))
         if channel:
@@ -231,6 +257,29 @@ class GachaCog(commands.Cog):
                 f"{interaction.user.mention} が「{item['name']}」を利用しました。\n"
                 f"結果: **{result}** / 商品名: **{product['name']}** / {status}"
             )
+
+    @app_commands.command(name="ガチャパネル", description="ボタンで引けるガチャパネルを設置します")
+    @app_commands.autocomplete(gacha_id=gacha_choices)
+    @is_allowed()
+    async def panel(self, interaction: discord.Interaction, gacha_id: str):
+        await interaction.response.defer(ephemeral=True)
+        data, item = self.owned(interaction, gacha_id)
+        if not item:
+            return await interaction.followup.send("ガチャが見つかりません。", ephemeral=True)
+
+        products = _products(item)
+        save_guild_json(interaction.guild_id, "gacha.json", data)
+        embed = discord.Embed(
+            title=item["name"],
+            description="下のボタンからガチャを引けます。結果と商品はDMへ送信されます。",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="1回の価格", value=f"```{item['price']}円```", inline=True)
+        embed.add_field(name="商品数", value=f"```{len(products)}種類```", inline=True)
+        embed.set_footer(text="DMを受信できるように設定してからご利用ください。")
+        await interaction.channel.send(embed=embed, view=GachaPanelView(self, gacha_id))
+        await interaction.followup.send("ガチャパネルを設置しました。", ephemeral=True)
 
 
 async def setup(bot):

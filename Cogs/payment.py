@@ -36,7 +36,7 @@ class PaymentCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="ltcウォレット設定", description="売上を受け取るLTCウォレットを設定します")
-    @app_commands.describe(address="Litecoinの受取アドレス")
+    @app_commands.describe(address="送金先のLitecoinアドレス")
     @is_allowed()
     async def set_ltc_wallet(self, interaction: discord.Interaction, address: str):
         if interaction.guild_id is None:
@@ -45,12 +45,19 @@ class PaymentCog(commands.Cog):
         if not LTC_ADDRESS.fullmatch(address):
             return await interaction.response.send_message("正しいLitecoinアドレスを入力してください。", ephemeral=True)
         ensure_guild_files(interaction.guild_id)
-        set_payment(interaction.guild_id, interaction.user.id, "ltc", True, ltc_wallet=address)
+        set_payment(
+            interaction.guild_id,
+            interaction.user.id,
+            "ltc",
+            True,
+            ltc_wallet=address,
+        )
         embed = discord.Embed(
             title="LTCウォレット設定完了",
-            description=f"売上受取先を `{address}` に設定しました。",
+            description=f"入金先を `{address}` に設定しました。注文のLTCはこのアドレスへ直接送金されます。",
             color=discord.Color.blue(),
         )
+        embed.set_footer(text="シードフレーズ・秘密鍵はBOTへ送信しないでください。")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="ltc残高", description="設定済みLTCウォレットの残高を確認します")
